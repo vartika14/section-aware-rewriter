@@ -20,9 +20,46 @@ export type UploadResponse = {
 async function unwrap<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    throw new Error(body?.detail ?? `Request failed (${response.status})`);
+    // FastAPI returns a string `detail` for our own HTTPExceptions, but a list
+    // of error objects for 422 schema violations. Flatten both to a sentence.
+    const detail = Array.isArray(body?.detail)
+      ? body.detail.map((e: { msg?: string }) => e.msg).join("; ")
+      : body?.detail;
+    throw new Error(detail || `Request failed (${response.status})`);
   }
   return response.json() as Promise<T>;
+}
+
+/**
+ * `status` is a discriminator. Today "complete" is the only arm; the
+ * clarification loop adds "needs_clarification" alongside it, and the UI
+ * switches on this field rather than being restructured.
+ */
+export type RewriteComplete = {
+  status: "complete";
+  section_id: string;
+  old_text: string;
+  new_text: string;
+};
+
+export type RewriteResult = RewriteComplete;
+
+export async function rewriteSection(input: {
+  documentId: string;
+  sectionId: string;
+  instruction: string;
+}): Promise<RewriteResult> {
+  return unwrap<RewriteResult>(
+    await fetch(`${API_BASE}/rewrite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        document_id: input.documentId,
+        section_id: input.sectionId,
+        instruction: input.instruction,
+      }),
+    }),
+  );
 }
 
 export async function uploadDocument(file: File): Promise<UploadResponse> {
