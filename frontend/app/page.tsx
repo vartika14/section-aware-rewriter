@@ -39,7 +39,7 @@ export default function Home() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl space-y-6 p-8">
+    <main className="mx-auto max-w-6xl space-y-6 p-8">
       <header>
         <h1 className="text-2xl font-bold">Section-aware rewrite agent</h1>
         <p className="text-slate-500">
@@ -47,48 +47,63 @@ export default function Home() {
         </p>
       </header>
 
-      <UploadPanel
-        onUploaded={(uploaded, name) => {
-          setDocument(uploaded);
-          setFilename(name);
-          setSelectedId(null);
-          setResult(null);
-          setError(null);
-        }}
-      />
-
-      {document && (
-        <>
-          <p className="text-sm text-slate-500">
-            Loaded <span className="font-medium text-slate-700">{filename}</span>
-          </p>
-
-          <SectionList
-            sections={document.sections}
-            headingsDetected={document.headings_detected}
-            selectedId={selectedId}
-            onSelect={(id) => {
-              setSelectedId(id);
+      {/* Two columns once a document is loaded: the section list stays pinned
+          on the left, so it is always clear which section a result belongs to
+          without scrolling back up. */}
+      <div className="grid gap-6 md:grid-cols-[20rem_1fr] md:items-start">
+        <div className="space-y-4">
+          <UploadPanel
+            onUploaded={(uploaded, name) => {
+              setDocument(uploaded);
+              setFilename(name);
+              setSelectedId(null);
               setResult(null);
               setError(null);
             }}
           />
-        </>
-      )}
 
-      {selected && (
-        <InstructionPanel
-          section={selected}
-          busy={busy}
-          onSubmit={handleInstruction}
-        />
-      )}
+          {document && (
+            <>
+              <p className="text-sm text-slate-500">
+                Loaded <span className="font-medium text-slate-700">{filename}</span>
+              </p>
 
-      {error && (
-        <p className="rounded-md bg-red-50 p-4 text-sm text-red-700">{error}</p>
-      )}
+              <SectionList
+                sections={document.sections}
+                headingsDetected={document.headings_detected}
+                selectedId={selectedId}
+                onSelect={(id) => {
+                  setSelectedId(id);
+                  setResult(null);
+                  setError(null);
+                }}
+              />
+            </>
+          )}
+        </div>
 
-      {result?.status === "complete" && <ResultPanel result={result} />}
+        <div className="space-y-6">
+          {document && !selected && (
+            <p className="rounded-lg border border-dashed border-slate-300 p-6 text-sm text-slate-500">
+              Pick a section on the left to rewrite it.
+            </p>
+          )}
+
+          {selected && (
+            <InstructionPanel
+              section={selected}
+              busy={busy}
+              onSubmit={handleInstruction}
+            />
+          )}
+
+          {error && (
+            <p className="rounded-md bg-red-50 p-4 text-sm text-red-700">{error}</p>
+          )}
+
+          {result?.status === "complete" && <ResultPanel result={result} />}
+        </div>
+      </div>
     </main>
   );
 }
