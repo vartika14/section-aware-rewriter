@@ -297,6 +297,26 @@ blocking = lambda f: f.kind != "stale_reference" and not is_resolvable(f, sectio
 This is the function read aloud in the session in place of the bare boolean check in §4 — it's the
 same policy, made falsifiable.
 
+### 14.2a The two quotes fail in opposite directions
+
+Both `quote` and `deriving_quote` are substring-verified, but an unverifiable one means something
+different in each case, and the safe response is the opposite each time:
+
+| Field | What an unverifiable quote means | Response |
+|---|---|---|
+| `deriving_quote` | The proposed *resolution* is ungrounded | Fail closed — treat as not resolvable, **ask** |
+| `quote` | The *conflict itself* is ungrounded, possibly hallucinated | **Never blocking** — demote to a ripple, marked unverified |
+
+Failing closed on `quote` would mean interrupting a consultant about a conflict that may not exist —
+the precise interrupt-fatigue failure §2 warns about. Dropping it silently is also wrong: the
+codebase already holds the line that hiding part of a document from the user is the class of bug
+this tool exists to prevent (see the `(untitled opening)` decision in the README). So an
+unverifiable finding is surfaced as a ripple, flagged `verified: false`, and can never trigger a
+question.
+
+Verification is normalized on whitespace and case before comparison, so ordinary reformatting
+doesn't read as a hallucination.
+
 ### 14.3 Collapsing findings that share an answer
 
 §4 states findings sharing an answer collapse into one question, without saying how "sharing an
@@ -318,7 +338,19 @@ into natural prose.** The phrasing call cannot alter option keys or branches —
 fixed input and returns text only. This keeps the graded judgement (ask-or-not, what the branches
 are) in testable Python while the question a consultant reads doesn't sound templated.
 
-### 14.5 What did not change
+### 14.5 Two specced behaviours `llm.py` does not yet have
+
+Phase 2's `structured_completion` takes neither a temperature nor a retry, though §10 requires
+"schema validation with one retry" and the audit step requires temperature pinned to 0. Both land
+in Phase 3, in the one seam every call already passes through:
+
+- **`temperature=0` on the audit call.** An interrupt policy that fires intermittently can be
+  neither defended in the session nor tested. The draft call keeps a default temperature; only the
+  graded judgement needs determinism.
+- **One retry on a schema violation**, then a clear `ModelRefusal` to the UI. Never a silent
+  partial result.
+
+### 14.6 What did not change
 
 §3 (taxonomy), §6.1–6.3 (three-step suspendable pipeline, DRAFT/AUDIT separation, whole-document
 context), §7 (API shape — `POST /rewrite`, `POST /rewrite/{session_id}/answer`, same discriminated

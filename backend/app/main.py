@@ -13,8 +13,11 @@ from pydantic import BaseModel, field_validator
 
 from . import store
 from .agent import draft_rewrite, find_section
+from .audit import audit_rewrite
 from .llm import ModelRefusal
 from .parsing import Section, UnparseableDocument, parse_docx
+from .policy import Ripple, decide
+from .question import Option, compose_question
 
 app = FastAPI(title="Section-aware rewrite agent")
 
@@ -63,21 +66,43 @@ class RewriteRequest(BaseModel):
 
 
 class RewriteComplete(BaseModel):
-    """One arm of the rewrite response.
-
-    `status` is a discriminator from the start, even though it is the only
-    possible value today, so the front end is written against the shape the
-    clarification loop will need rather than being rewritten for it later.
-    """
+    """The rewrite stands. `ripples` are the consequences the policy judged not
+    worth interrupting for — shown so the consultant can act on them by hand."""
 
     status: Literal["complete"] = "complete"
     section_id: str
     old_text: str
     new_text: str
+    ripples: list[Ripple] = []
 
 
-@app.post("/rewrite", response_model=RewriteComplete)
-async def rewrite(request: RewriteRequest) -> RewriteComplete:
+class RewriteNeedsClarification(BaseModel):
+    """The rewrite is suspended until the user picks an option."""
+
+    status: Literal["needs_clarification"] = "needs_clarification"
+    session_id: str
+    section_id: str
+    question: str
+    options: list[Option]
+
+
+class RewriteDeclined(BaseModel):
+    """The instruction made no sense for this section, so nothing was written.
+
+    Declining is a result, not an error: mangling the section confidently would
+    be far worse than saying so.
+    """
+
+    status: Literal["declined"] = "declined"
+    section_id: str
+    reason: str
+
+
+RewriteResponse = RewriteComplete | RewriteNeedsClarification | RewriteDeclined
+
+
+@app.post("/rewrite", response_model=RewriteResponse)
+async def rewrite(request: RewriteRequest) -> RewriteResponse:
     document = store.get_document(request.document_id)
     if document is None:
         raise HTTPException(
@@ -97,6 +122,12 @@ async def rewrite(request: RewriteRequest) -> RewriteComplete:
             section_id=request.section_id,
             instruction=request.instruction,
         )
+        audit = audit_rewrite(
+            sections=document.sections,
+            section_id=request.section_id,
+            instruction=request.instruction,
+            new_text=draft.new_text,
+        )
     except (ModelRefusal, OpenAIError) as exc:
         # A refusal, a content filter or a transport error is an expected
         # operating condition for this app, not a crash. Say so plainly.
@@ -104,6 +135,40 @@ async def rewrite(request: RewriteRequest) -> RewriteComplete:
             status_code=502, detail=f"The model could not complete this rewrite: {exc}"
         ) from exc
 
-    return RewriteComplete(
-        section_id=section.id, old_text=section.text, new_text=draft.new_text
+    decision = decide(audit, document.sections)
+
+    if decision.action == "decline":
+        return RewriteDeclined(section_id=section.id, reason=decision.reason or "")
+
+    if decision.action == "complete":
+        return RewriteComplete(
+            section_id=section.id,
+            old_text=section.text,
+            new_text=draft.new_text,
+            ripples=decision.ripples,
+        )
+
+    # Suspend. One question per round, so the first group is asked now and any
+    # others wait — a human asked four questions stops reading at the second.
+    question = compose_question(
+        decision.groups[0],
+        sections=document.sections,
+        instruction=request.instruction,
+    )
+    session_id = store.save_session(
+        store.RewriteSession(
+            document_id=request.document_id,
+            section_id=request.section_id,
+            instruction=request.instruction,
+            draft_text=draft.new_text,
+            groups=decision.groups,
+            ripples=decision.ripples,
+        )
+    )
+
+    return RewriteNeedsClarification(
+        session_id=session_id,
+        section_id=section.id,
+        question=question.text,
+        options=question.options,
     )

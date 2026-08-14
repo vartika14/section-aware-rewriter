@@ -40,7 +40,7 @@ def render_document(sections: list[Section], focus_id: str) -> str:
     refers to sections by id, and the model needs to be able to name them.
     """
     return "\n\n".join(
-        f"## {section.heading} ({section.id})"
+        f"## [{section.id}] {section.heading}"
         f"{' ' + REWRITE_MARKER if section.id == focus_id else ''}\n"
         f"{section.text}"
         for section in sections
@@ -66,4 +66,10 @@ def draft_rewrite(
         f"Instruction: {instruction}"
     )
 
-    return structured_completion(system=SYSTEM, user=user, schema=Draft)
+    # Pinned to 0 like the audit, and for the same reason once removed: the
+    # audit's only input is this draft, so a draft that varies makes the
+    # decision to interrupt vary with it. A consultant who reruns a rewrite and
+    # gets a question the second time has learned not to trust either answer.
+    return structured_completion(
+        system=SYSTEM, user=user, schema=Draft, temperature=0
+    )

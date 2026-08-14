@@ -40,7 +40,7 @@ def test_rendered_context_marks_the_section_being_rewritten():
 def test_draft_rewrite_returns_the_models_new_text(monkeypatch):
     captured = {}
 
-    def fake_completion(*, system, user, schema):
+    def fake_completion(*, system, user, schema, **kwargs):
         captured["system"] = system
         captured["user"] = user
         return schema(new_text="Named deliverables: a current-state map.")
@@ -62,7 +62,7 @@ def test_draft_rewrite_sends_the_whole_document_not_just_the_section(monkeypatch
     s3 never reaches the model, nothing downstream can be consistent with it."""
     captured = {}
 
-    def fake_completion(*, system, user, schema):
+    def fake_completion(*, system, user, schema, **kwargs):
         captured["user"] = user
         return schema(new_text="...")
 
@@ -73,6 +73,24 @@ def test_draft_rewrite_sends_the_whole_document_not_just_the_section(monkeypatch
     assert "EUR 48,000" in captured["user"]
     assert "Act on it this quarter." in captured["user"]
     assert "Be concrete." in captured["user"]
+
+
+def test_draft_rewrite_is_pinned_to_temperature_zero(monkeypatch):
+    """Pinning only the audit is not enough: the audit's input is the draft, so a
+    varying draft makes the interrupt decision vary too. Measured on the sample
+    proposal, an unpinned draft flipped the brief's own example between asking
+    and staying silent across identical runs."""
+    captured = {}
+
+    def fake_completion(*, system, user, schema, **kwargs):
+        captured["temperature"] = kwargs.get("temperature")
+        return schema(new_text="...")
+
+    monkeypatch.setattr("app.agent.structured_completion", fake_completion)
+
+    draft_rewrite(sections=SECTIONS, section_id="s2", instruction="Be concrete.")
+
+    assert captured["temperature"] == 0
 
 
 def test_draft_rewrite_rejects_an_unknown_section_id():
