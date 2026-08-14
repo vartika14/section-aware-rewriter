@@ -241,3 +241,87 @@ Additionally cut by choice, to be stated in the README:
 - **Applying ripple edits automatically** — they are proposed and shown, never written outside the
   selected section. The consultant stays the editor of record.
 - **More than two clarification rounds** — beyond that the agent states an assumption instead.
+
+## 14. Addendum — Phase 3/4 refinements (2026-08-14)
+
+Written after phases 0–2 shipped and confirmed the whole-document context works — and is dangerous
+unaudited (see `docs/status.md`: the phase-2 draft silently turned "no more than twelve" into a
+commitment and invented "twelve stakeholder interviews" by pulling a number from section 4 into
+section 2). These refinements tighten §4 and §6.4 before Phase 3 is built, so `resolvable_from_document`
+is a verified claim rather than a trusted model boolean.
+
+### 14.1 `resolvable_from_document` must be grounded, not trusted
+
+The original §6.4 schema let the audit call assert `resolvable_from_document: bool` with nothing to
+check it against. Since DECIDE (§6.2) treats that boolean as license to skip asking the human, an
+ungrounded true is the single riskiest failure mode in the whole pipeline — it's a silent wrong
+answer dressed as a correct one.
+
+`Finding` gains two fields, required together:
+
+```python
+class Finding(BaseModel):
+    section_id: str
+    quote: str
+    kind: Literal["contradiction", "invalidated_premise", "stale_reference"]
+    explanation: str
+    resolvable_from_document: bool
+    deriving_section_id: str | None = None   # which other section supplies the answer
+    deriving_quote: str | None = None        # exact quote from that section grounding the derivation
+    proposed_fix: str | None
+```
+
+`deriving_quote` follows the same grounding logic §6.4 already applies to `quote`: a citation that
+can be checked against real text is one that can't be silently hallucinated.
+
+### 14.2 `policy.py` verifies the citation deterministically
+
+No extra model call. `is_resolvable` normalizes whitespace/case and substring-checks both quotes
+against the actual section text; any failure — missing fields, an unknown `deriving_section_id`, a
+`deriving_quote` that isn't actually in that section — fails closed to "ask":
+
+```python
+def is_resolvable(finding: Finding, sections_by_id: dict[str, Section]) -> bool:
+    if not finding.resolvable_from_document:
+        return False
+    if not finding.deriving_section_id or not finding.deriving_quote:
+        return False
+    section = sections_by_id.get(finding.deriving_section_id)
+    if section is None:
+        return False
+    return normalize(finding.deriving_quote) in normalize(section.text)
+
+blocking = lambda f: f.kind != "stale_reference" and not is_resolvable(f, sections_by_id)
+```
+
+This is the function read aloud in the session in place of the bare boolean check in §4 — it's the
+same policy, made falsifiable.
+
+### 14.3 Collapsing findings that share an answer
+
+§4 states findings sharing an answer collapse into one question, without saying how "sharing an
+answer" is determined. Rule: **group blocking findings by `section_id`** — the other section each
+one conflicts with. Findings citing the same section share a root tension and become one question
+with options that resolve all of them together (the brief's Example A: a fee finding and a
+deliverables finding, both pointing at the pricing section, become one three-option question).
+Findings citing different sections become separate groups.
+
+Within the two-round cap (§7): round 1 asks about the first group (by order found), round 2 asks
+about the next group if one remains unresolved, and beyond that the agent proceeds and states its
+assumption in the result rather than asking a third time.
+
+### 14.4 Question wording stays split between Python and the model
+
+Per the open question in `docs/status.md` §3c: **Python decides whether to ask and builds the
+lettered options from the finding group; a separate, narrowly-scoped model call only rephrases that
+into natural prose.** The phrasing call cannot alter option keys or branches — it receives them as
+fixed input and returns text only. This keeps the graded judgement (ask-or-not, what the branches
+are) in testable Python while the question a consultant reads doesn't sound templated.
+
+### 14.5 What did not change
+
+§3 (taxonomy), §6.1–6.3 (three-step suspendable pipeline, DRAFT/AUDIT separation, whole-document
+context), §7 (API shape — `POST /rewrite`, `POST /rewrite/{session_id}/answer`, same discriminated
+`status` shapes), §8 (module-level dict of `RewriteSession`), and §10 (error handling) all stand as
+originally specced. Phase 2 validated the architecture; it only exposed a gap in how much the audit
+step could be trusted.
