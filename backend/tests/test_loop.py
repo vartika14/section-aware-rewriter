@@ -271,3 +271,103 @@ def test_a_failed_redraft_does_not_consume_the_answer(document_id, model, monkey
     session = store.get_session(asking.session_id)
     assert session.answers == []
     assert session.completed is False
+
+
+# --- a second round, and then no more ------------------------------------
+
+
+def test_a_leftover_group_becomes_the_second_question(document_id, model):
+    """Two conflicts in two sections: one is asked now, one waits its turn."""
+    model["audits"] = [
+        AuditResult(
+            instruction_applicable=True,
+            findings=[fee_finding(), timeline_finding()],
+        )
+    ]
+
+    asking = ask(document_id)
+    second = loop.resume(asking.session_id, option_key="c")
+
+    assert isinstance(second, loop.Asking)
+    assert "3. Approach and Timeline" in second.question.text
+
+
+def test_a_conflict_the_answer_created_becomes_the_second_question(document_id, model):
+    """Hold the fee, trim the scope to fit — and now the summary is wrong.
+
+    That conflict did not exist when the first question was asked. Only a fresh
+    audit finds it, which is the whole argument for re-auditing after (a).
+    """
+    model["audits"] = [
+        AuditResult(instruction_applicable=True, findings=[fee_finding()]),
+        AuditResult(instruction_applicable=True, findings=[summary_finding()]),
+    ]
+
+    asking = ask(document_id)
+    second = loop.resume(asking.session_id, option_key="a")
+
+    assert isinstance(second, loop.Asking)
+    assert "1. Executive Summary" in second.question.text
+
+
+def test_the_same_section_is_never_asked_about_twice(document_id, model):
+    """A redraft can fail its constraint and hand back the identical finding.
+    Re-asking would tell the author the tool was not listening."""
+    model["audits"] = [
+        AuditResult(instruction_applicable=True, findings=[fee_finding()]),
+        AuditResult(instruction_applicable=True, findings=[fee_finding()]),
+    ]
+
+    asking = ask(document_id)
+    outcome = loop.resume(asking.session_id, option_key="a")
+
+    assert isinstance(outcome, loop.Completed)
+    assert [ripple.section_id for ripple in outcome.ripples] == ["s4"]
+
+
+def test_two_questions_is_the_limit(document_id, model):
+    """Three conflicts, three sections, and still only two questions."""
+    model["audits"] = [
+        AuditResult(
+            instruction_applicable=True,
+            findings=[fee_finding(), timeline_finding(), summary_finding()],
+        )
+    ]
+
+    asking = ask(document_id)
+    second = loop.resume(asking.session_id, option_key="c")
+    assert isinstance(second, loop.Asking)
+
+    third_outcome = loop.resume(second.session_id, option_key="c")
+    assert isinstance(third_outcome, loop.Completed)
+
+
+def test_what_the_cap_decided_is_stated_not_buried(document_id, model):
+    model["audits"] = [
+        AuditResult(
+            instruction_applicable=True,
+            findings=[fee_finding(), timeline_finding(), summary_finding()],
+        )
+    ]
+
+    asking = ask(document_id)
+    second = loop.resume(asking.session_id, option_key="c")
+    final = loop.resume(second.session_id, option_key="c")
+
+    assert final.assumptions == [
+        "Proceeding with the rewrite; 1. Executive Summary left as it stands."
+    ]
+
+
+def test_a_session_that_asks_again_is_not_yet_finished(document_id, model):
+    model["audits"] = [
+        AuditResult(
+            instruction_applicable=True,
+            findings=[fee_finding(), timeline_finding()],
+        )
+    ]
+
+    asking = ask(document_id)
+    loop.resume(asking.session_id, option_key="c")
+
+    assert store.get_session(asking.session_id).completed is False

@@ -137,6 +137,16 @@ def hold_constraint(group: FindingGroup) -> str:
     )
 
 
+def assumption_for(group: FindingGroup) -> str:
+    """What the agent decided once it had spent its two questions.
+
+    Stated on the result rather than added to the ripples: a ripple is something
+    the author may act on, an assumption is something the agent already acted on.
+    Conflating them hides the one thing the two-question cap owes the author.
+    """
+    return f"Proceeding with the rewrite; {group.heading} left as it stands."
+
+
 def resume(session_id: str, *, option_key: str) -> Outcome:
     """Second half of the loop: the author picked a branch.
 
@@ -200,14 +210,41 @@ def resume(session_id: str, *, option_key: str) -> Outcome:
     # session exactly as it was and the author can retry without burning a round.
     session.answers.append(option_key)
     session.draft_text = new_text
-    session.ripples = ripples
-    session.groups = groups
-    session.completed = True
 
+    # A group naming a section already asked about is demoted rather than raised
+    # again. Branch (a) can redraft, miss its constraint, and produce the
+    # identical finding; re-asking would say the tool was not listening.
+    fresh = [g for g in groups if g.section_id not in session.asked_section_ids]
+    ripples.extend(
+        to_ripple(finding, by_id)
+        for group in groups
+        if group.section_id in session.asked_section_ids
+        for finding in group.findings
+    )
+
+    session.ripples = ripples
+    session.groups = fresh
+
+    # Two questions, ever. `answers` already holds this round's, so one answer
+    # means a second question is still allowed and two means the cap is spent.
+    if fresh and len(session.answers) < 2:
+        session.asked_section_ids.append(fresh[0].section_id)
+        return Asking(
+            session_id=session_id,
+            section_id=session.section_id,
+            question=compose_question(
+                fresh[0],
+                sections=document.sections,
+                instruction=session.instruction,
+            ),
+        )
+
+    session.completed = True
     section = find_section(document.sections, session.section_id)
     return Completed(
         section_id=section.id,
         old_text=section.text,
         new_text=new_text,
         ripples=ripples,
+        assumptions=[assumption_for(group) for group in fresh],
     )
