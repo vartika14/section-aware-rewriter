@@ -206,7 +206,7 @@ def audit(**overrides) -> AuditResult:
 def test_a_rewrite_that_breaks_nothing_completes_silently():
     """The true negative. Precision matters as much as recall: an agent that
     always finds something to ask about gets switched off."""
-    decision = decide(audit(), SECTIONS)
+    decision = decide(audit(), SECTIONS, rewritten_section_id="s2")
 
     assert decision.action == "complete"
     assert decision.ripples == []
@@ -220,6 +220,7 @@ def test_an_inapplicable_instruction_declines_instead_of_guessing():
             inapplicable_reason="That section sets no dates to bring forward.",
         ),
         SECTIONS,
+        rewritten_section_id="s2",
     )
 
     assert decision.action == "decline"
@@ -239,6 +240,7 @@ def test_non_blocking_findings_come_back_as_ripples():
             ]
         ),
         SECTIONS,
+        rewritten_section_id="s2",
     )
 
     assert decision.action == "complete"
@@ -246,7 +248,7 @@ def test_non_blocking_findings_come_back_as_ripples():
 
 
 def test_a_ripple_carries_its_fix_and_the_heading_a_human_can_navigate_to():
-    decision = decide(audit(findings=[resolvable_finding()]), SECTIONS)
+    decision = decide(audit(findings=[resolvable_finding()]), SECTIONS, rewritten_section_id="s2")
 
     ripple = decision.ripples[0]
     assert ripple.heading == "4. Fees and Payment"
@@ -258,7 +260,9 @@ def test_an_unverified_finding_is_reported_but_marked_unverified():
     """Shown, not hidden — silently dropping something the model flagged is the
     class of bug this tool exists to prevent."""
     decision = decide(
-        audit(findings=[finding(quote="a fixed fee of EUR 90,000")]), SECTIONS
+        audit(findings=[finding(quote="a fixed fee of EUR 90,000")]),
+        SECTIONS,
+        rewritten_section_id="s2",
     )
 
     assert decision.action == "complete"
@@ -266,7 +270,7 @@ def test_an_unverified_finding_is_reported_but_marked_unverified():
 
 
 def test_one_blocking_finding_asks():
-    decision = decide(audit(findings=[finding()]), SECTIONS)
+    decision = decide(audit(findings=[finding()]), SECTIONS, rewritten_section_id="s2")
 
     assert decision.action == "ask"
     assert len(decision.groups) == 1
@@ -287,6 +291,7 @@ def test_findings_against_the_same_section_collapse_into_one_question():
             ]
         ),
         SECTIONS,
+        rewritten_section_id="s2",
     )
 
     assert len(decision.groups) == 1
@@ -306,6 +311,7 @@ def test_findings_against_different_sections_stay_separate():
             ]
         ),
         SECTIONS,
+        rewritten_section_id="s2",
     )
 
     assert [group.section_id for group in decision.groups] == ["s4", "s3"]
@@ -316,8 +322,69 @@ def test_blocking_and_non_blocking_findings_are_reported_together():
     decision = decide(
         audit(findings=[finding(), finding(section_id="s1", quote="within the quarter", kind="stale_reference")]),
         SECTIONS,
+        rewritten_section_id="s2",
     )
 
     assert decision.action == "ask"
     assert len(decision.groups) == 1
     assert len(decision.ripples) == 1
+
+
+# --- the section being rewritten cannot vouch for itself -----------------
+
+
+def test_a_resolution_grounded_in_the_rewritten_section_is_not_a_resolution():
+    """The words doing the resolving are about to be deleted.
+
+    `decide` is handed the document as it stands *before* the rewrite, so a
+    citation pointing at the section under edit verifies against text that will
+    not survive the change. Trusting it is a silent wrong answer.
+    """
+    self_grounded = finding(
+        resolvable_from_document=True,
+        deriving_section_id="s2",
+        deriving_quote="The engagement is advisory",
+    )
+
+    assert is_resolvable(self_grounded, BY_ID) is True
+    assert is_resolvable(self_grounded, BY_ID, rewritten_section_id="s2") is False
+
+
+def test_a_self_grounded_resolution_falls_closed_to_asking():
+    decision = decide(
+        audit(
+            findings=[
+                finding(
+                    resolvable_from_document=True,
+                    deriving_section_id="s2",
+                    deriving_quote="The engagement is advisory",
+                )
+            ]
+        ),
+        SECTIONS,
+        rewritten_section_id="s2",
+    )
+
+    assert decision.action == "ask"
+
+
+def test_a_finding_against_the_rewritten_section_never_blocks():
+    """A section cannot conflict with itself; that is just the rewrite."""
+    decision = decide(
+        audit(findings=[finding(section_id="s2", quote="The engagement is advisory")]),
+        SECTIONS,
+        rewritten_section_id="s2",
+    )
+
+    assert decision.action == "complete"
+
+
+def test_but_it_is_still_reported_as_a_ripple():
+    """Silently dropping it would hide part of the document from the author."""
+    decision = decide(
+        audit(findings=[finding(section_id="s2", quote="The engagement is advisory")]),
+        SECTIONS,
+        rewritten_section_id="s2",
+    )
+
+    assert [ripple.section_id for ripple in decision.ripples] == ["s2"]

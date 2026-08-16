@@ -59,7 +59,7 @@ def run(sections, heading_fragment: str, instruction: str):
         instruction=instruction,
         new_text=draft.new_text,
     )
-    return decide(audit, sections)
+    return decide(audit, sections, rewritten_section_id=section_id)
 
 
 def flagged_sections(decision) -> set[str]:

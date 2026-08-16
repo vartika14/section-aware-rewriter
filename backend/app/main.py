@@ -135,7 +135,9 @@ async def rewrite(request: RewriteRequest) -> RewriteResponse:
             status_code=502, detail=f"The model could not complete this rewrite: {exc}"
         ) from exc
 
-    decision = decide(audit, document.sections)
+    decision = decide(
+        audit, document.sections, rewritten_section_id=request.section_id
+    )
 
     if decision.action == "decline":
         return RewriteDeclined(section_id=section.id, reason=decision.reason or "")

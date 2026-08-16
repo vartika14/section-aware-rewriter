@@ -61,24 +61,45 @@ def is_verified(finding: Finding, by_id: dict[str, Section]) -> bool:
     return _quotes(finding.quote, finding.section_id, by_id)
 
 
-def is_resolvable(finding: Finding, by_id: dict[str, Section]) -> bool:
+def is_resolvable(
+    finding: Finding,
+    by_id: dict[str, Section],
+    *,
+    rewritten_section_id: str | None = None,
+) -> bool:
     """Can the document settle this without asking anyone?
 
     The model's `resolvable_from_document` claim is not taken on trust: it must
     cite the section and the exact words that supply the answer, and those words
     must really be there. Anything less fails closed, because this boolean is the
     only thing standing between a conflict and a human never hearing about it.
+
+    A citation pointing at the section being rewritten fails closed too, and for
+    a reason the substring check cannot see: this function is handed the document
+    as it stands *before* the rewrite, so those words verify and are then
+    deleted. A resolution grounded in text that is about to vanish is not one.
     """
     if not finding.resolvable_from_document:
+        return False
+    if rewritten_section_id and finding.deriving_section_id == rewritten_section_id:
         return False
     return _quotes(finding.deriving_quote, finding.deriving_section_id, by_id)
 
 
-def is_blocking(finding: Finding, by_id: dict[str, Section]) -> bool:
+def is_blocking(
+    finding: Finding,
+    by_id: dict[str, Section],
+    *,
+    rewritten_section_id: str | None = None,
+) -> bool:
     """The interrupt policy.
 
-    Three ways a finding stays quiet, and they are quiet for different reasons:
+    Four ways a finding stays quiet, and they are quiet for different reasons:
 
+    * a finding against the section being rewritten is not a conflict *between*
+      sections — it is the rewrite. It can never be a question, though it is
+      still reported, since the audit may have something true to say about the
+      text being replaced;
     * a stale reference is a ripple edit, never a decision — but the label is
       the model's opinion, and it is only honoured for text that describes
       rather than promises. Measured against the real model, a fixed fee whose
@@ -91,11 +112,15 @@ def is_blocking(finding: Finding, by_id: dict[str, Section]) -> bool:
       switched off. It is still reported — see `Ripple.verified` — but it can
       never become a question.
     """
+    if rewritten_section_id and finding.section_id == rewritten_section_id:
+        return False
     if finding.kind == "stale_reference" and not quotes_a_commitment(finding.quote):
         return False
     if not is_verified(finding, by_id):
         return False
-    return not is_resolvable(finding, by_id)
+    return not is_resolvable(
+        finding, by_id, rewritten_section_id=rewritten_section_id
+    )
 
 
 class Ripple(BaseModel):
@@ -134,7 +159,12 @@ class Decision(BaseModel):
     reason: str | None = None
 
 
-def _ripple(finding: Finding, by_id: dict[str, Section]) -> Ripple:
+def to_ripple(finding: Finding, by_id: dict[str, Section]) -> Ripple:
+    """Build the reportable form of a finding the policy chose not to ask about.
+
+    Public because `loop.py` also demotes findings to ripples — when the author
+    says "flag it", and when a group has already been asked about once.
+    """
     section = by_id.get(finding.section_id)
     return Ripple(
         section_id=finding.section_id,
@@ -163,8 +193,18 @@ def _group(blocking: list[Finding], by_id: dict[str, Section]) -> list[FindingGr
     ]
 
 
-def decide(audit: AuditResult, sections: list[Section]) -> Decision:
-    """Turn the audit's evidence into one of three outcomes."""
+def decide(
+    audit: AuditResult,
+    sections: list[Section],
+    *,
+    rewritten_section_id: str,
+) -> Decision:
+    """Turn the audit's evidence into one of three outcomes.
+
+    `rewritten_section_id` is required rather than optional because forgetting it
+    silently weakens the verification the whole design rests on — see
+    `is_resolvable`. A safeguard that defaults to off is not a safeguard.
+    """
     if not audit.instruction_applicable:
         return Decision(
             action="decline",
@@ -174,11 +214,14 @@ def decide(audit: AuditResult, sections: list[Section]) -> Decision:
 
     by_id = {section.id: section for section in sections}
 
-    blocking = [f for f in audit.findings if is_blocking(f, by_id)]
-    quiet = [f for f in audit.findings if not is_blocking(f, by_id)]
+    def blocks(finding: Finding) -> bool:
+        return is_blocking(finding, by_id, rewritten_section_id=rewritten_section_id)
+
+    blocking = [f for f in audit.findings if blocks(f)]
+    quiet = [f for f in audit.findings if not blocks(f)]
 
     return Decision(
         action="ask" if blocking else "complete",
-        ripples=[_ripple(f, by_id) for f in quiet],
+        ripples=[to_ripple(f, by_id) for f in quiet],
         groups=_group(blocking, by_id),
     )
