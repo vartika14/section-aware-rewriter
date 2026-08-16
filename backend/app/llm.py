@@ -47,11 +47,22 @@ def structured_completion(
     usually a one-off, and a silent partial result is never returned. An outright
     refusal is not retried: a content filter will refuse again, and retrying only
     delays telling the user.
+
+    The retry is nudged off a pinned temperature. Repeating a request byte for
+    byte mostly repeats the answer, and both graded calls sit at 0 — so without
+    the nudge a deterministic schema failure would fail twice and call itself a
+    retry. The nudge is small and applies only to the second attempt, so the
+    determinism the pinning buys is intact for every call that succeeds.
     """
     settings = get_settings()
-    kwargs = {} if temperature is None else {"temperature": temperature}
 
-    for _ in range(2):
+    for attempt in range(2):
+        kwargs = {}
+        if temperature is not None:
+            kwargs["temperature"] = (
+                temperature if attempt == 0 else min(temperature + 0.2, 1.0)
+            )
+
         message = (
             _client()
             .chat.completions.parse(

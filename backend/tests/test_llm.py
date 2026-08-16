@@ -106,3 +106,31 @@ def test_an_outright_refusal_is_not_retried(fake_client):
         structured_completion(system="s", user="u", schema=Answer)
 
     assert len(client.calls) == 1
+
+
+def test_a_pinned_retry_is_nudged_off_zero(fake_client):
+    """A retry that repeats the request byte for byte mostly repeats the answer.
+
+    Both graded calls pin temperature to 0, so a deterministic schema failure
+    would have failed twice and called it a retry. The second attempt is nudged
+    just far enough to break that, and no further: one retry, then stop.
+    """
+    client = fake_client(
+        FakeMessage(parsed=None, refusal=None), FakeMessage(parsed=Answer(text="ok"))
+    )
+
+    structured_completion(system="s", user="u", schema=Answer, temperature=0)
+
+    assert client.calls[0]["temperature"] == 0
+    assert client.calls[1]["temperature"] > 0
+
+
+def test_an_unpinned_retry_stays_unpinned(fake_client):
+    """Nothing is invented for a caller that never asked for a temperature."""
+    client = fake_client(
+        FakeMessage(parsed=None, refusal=None), FakeMessage(parsed=Answer(text="ok"))
+    )
+
+    structured_completion(system="s", user="u", schema=Answer)
+
+    assert "temperature" not in client.calls[1]
