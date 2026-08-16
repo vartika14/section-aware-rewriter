@@ -15,7 +15,7 @@ from . import loop, store
 from .llm import ModelRefusal
 from .parsing import Section, UnparseableDocument, parse_docx
 from .policy import Ripple
-from .question import Option
+from .question import Branch, Option
 
 app = FastAPI(title="Section-aware rewrite agent")
 
@@ -61,6 +61,21 @@ class RewriteRequest(BaseModel):
         if not value.strip():
             raise ValueError("Instruction must not be empty.")
         return value.strip()
+
+
+class AnswerRequest(BaseModel):
+    option_key: str
+
+    @field_validator("option_key")
+    @classmethod
+    def must_be_a_branch(cls, value: str) -> str:
+        """Reject at the boundary rather than deep in the loop, so a bad key is a
+        422 about the request instead of a 500 about a ValueError."""
+        try:
+            Branch(value)
+        except ValueError as exc:
+            raise ValueError("option_key must be one of: a, b, c.") from exc
+        return value
 
 
 class RewriteComplete(BaseModel):
@@ -141,6 +156,36 @@ async def rewrite(request: RewriteRequest) -> RewriteResponse:
     except (ModelRefusal, OpenAIError) as exc:
         # A refusal, a content filter or a transport error is an expected
         # operating condition for this app, not a crash. Say so plainly.
+        raise HTTPException(
+            status_code=502, detail=f"The model could not complete this rewrite: {exc}"
+        ) from exc
+
+    return _to_response(outcome)
+
+
+@app.post("/rewrite/{session_id}/answer", response_model=RewriteResponse)
+async def answer(session_id: str, request: AnswerRequest) -> RewriteResponse:
+    """Resume a suspended rewrite. Same three shapes as `/rewrite`, so the front
+    end renders a second question exactly as it rendered the first."""
+    try:
+        outcome = loop.resume(session_id, option_key=request.option_key)
+    except loop.UnknownSession as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="No rewrite session with that id — start the rewrite again.",
+        ) from exc
+    except loop.UnknownDocument as exc:
+        # The session outlived its document, which an in-memory store makes
+        # possible across a restart. Say which thing is missing.
+        raise HTTPException(
+            status_code=404,
+            detail="The document for this rewrite is gone — upload it again.",
+        ) from exc
+    except loop.SessionFinished as exc:
+        raise HTTPException(
+            status_code=409, detail="This rewrite has already finished."
+        ) from exc
+    except (ModelRefusal, OpenAIError) as exc:
         raise HTTPException(
             status_code=502, detail=f"The model could not complete this rewrite: {exc}"
         ) from exc

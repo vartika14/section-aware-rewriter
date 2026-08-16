@@ -289,3 +289,83 @@ def test_an_instruction_that_makes_no_sense_is_declined(document_id, fake_model)
 
     assert body["status"] == "declined"
     assert "deadline" in body["reason"]
+
+
+# --- answering the question ----------------------------------------------
+
+
+def answer(session_id: str, option_key: str = "c"):
+    return client.post(
+        f"/rewrite/{session_id}/answer", json={"option_key": option_key}
+    )
+
+
+@pytest.fixture
+def asked(document_id, fake_model):
+    """A suspended rewrite, ready to be answered."""
+    fake_model["result"] = AuditResult(
+        instruction_applicable=True, findings=[blocking_finding()]
+    )
+    body = rewrite(document_id).json()
+    assert body["status"] == "needs_clarification"
+    return body
+
+
+def test_answering_completes_the_rewrite(asked):
+    response = answer(asked["session_id"], "c")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "complete"
+    assert body["new_text"] == NEW_TEXT
+    assert body["assumptions"] == []
+
+
+def test_flagging_returns_the_finding_as_a_ripple(asked):
+    body = answer(asked["session_id"], "b").json()
+
+    assert [ripple["section_id"] for ripple in body["ripples"]] == ["s3"]
+
+
+def test_answering_an_unknown_session_404s(fake_model):
+    response = answer("nope")
+
+    assert response.status_code == 404
+    assert "session" in response.json()["detail"].lower()
+
+
+def test_answering_twice_409s(asked):
+    answer(asked["session_id"], "c")
+
+    response = answer(asked["session_id"], "c")
+
+    assert response.status_code == 409
+    assert "finished" in response.json()["detail"].lower()
+
+
+def test_an_unrecognised_option_is_a_422(asked):
+    response = answer(asked["session_id"], "z")
+
+    assert response.status_code == 422
+
+
+def test_a_lost_document_is_a_404_not_a_500(asked, monkeypatch):
+    """State is in memory. A restart between question and answer is real."""
+    monkeypatch.setattr("app.store._DOCUMENTS", {})
+
+    response = answer(asked["session_id"], "c")
+
+    assert response.status_code == 404
+    assert "document" in response.json()["detail"].lower()
+
+
+def test_a_model_failure_on_a_redraft_is_a_502(asked, monkeypatch):
+    def refuse(*, system, user, schema, **kwargs):
+        raise ModelRefusal("content filter triggered")
+
+    monkeypatch.setattr("app.agent.structured_completion", refuse)
+
+    response = answer(asked["session_id"], "a")
+
+    assert response.status_code == 502
+    assert "model" in response.json()["detail"].lower()
