@@ -357,3 +357,214 @@ context), §7 (API shape — `POST /rewrite`, `POST /rewrite/{session_id}/answer
 `status` shapes), §8 (module-level dict of `RewriteSession`), and §10 (error handling) all stand as
 originally specced. Phase 2 validated the architecture; it only exposed a gap in how much the audit
 step could be trusted.
+
+## 15. Addendum — Phase 4 design (2026-08-16)
+
+Written after phase 3 shipped. The agent now asks its question; nothing consumes the answer. This
+addendum specifies the back half of the loop. It amends three earlier passages, all written before
+the three branches of §14.4 existed:
+
+- **§8 and the "resume at DRAFT" arrow in §6's diagram** — resume re-enters DRAFT on one branch of
+  three, not on all of them (§15.1).
+- **§7's `complete` shape** — gains `assumptions` (§15.6).
+- **§14.3's round-2 rule** — still correct, but incomplete; an answer can create a conflict as well
+  as leave one unasked (§15.4).
+
+### 15.1 Only one branch re-drafts
+
+§8 says resume "re-enters DRAFT with the answer appended as an additional constraint". Applied to
+all three branches, that is wrong. The branches are not three flavours of the same instruction —
+two of them are the author saying *keep what you showed me*:
+
+| Branch | The author is saying | New text needed |
+|---|---|---|
+| (a) hold the other section | the other clause is fixed; trim the rewrite to fit it | **yes** |
+| (b) make the rewrite, flag the other section | the rewrite is right; I will fix the other clause myself | no |
+| (c) make the rewrite, leave the other section | the rewrite is right and I accept the mismatch | no |
+
+Returning to the model on (b) or (c) would risk handing back text different from the text the
+author just approved. In an editing tool that is the worst available surprise. So:
+
+```
+(a) → DRAFT (+ constraint) → AUDIT → DECIDE      1 model call
+(b) → the stored draft; the group's findings become ripples      0 model calls
+(c) → the stored draft; the group's findings are dropped         0 model calls
+```
+
+`RewriteSession.draft_text` already exists to make (b) and (c) free.
+
+### 15.2 Branch meaning gets a name
+
+The semantics of a branch currently live only inside a label string in `question.BRANCHES`.
+Switching on the bare key `"a"` in the resume path would put the meaning in two places and keep it
+in neither. One enum, in the module that owns the branches:
+
+```python
+class Branch(str, Enum):
+    HOLD   = "a"   # hold the other section; reshape the rewrite to fit
+    FLAG   = "b"   # make the rewrite; flag the other section
+    ACCEPT = "c"   # make the rewrite; leave the other section
+```
+
+Keys stay `a`/`b`/`c` in the API. An unrecognised key is rejected at the HTTP boundary.
+
+### 15.3 The HOLD constraint is built in Python, not asked for
+
+The added constraint is generated deterministically from the `FindingGroup`, so what the second
+draft is asked to honour can be unit tested:
+
+> *4. Fees and Payment must stand exactly as written. It says "A fixed fee of EUR 48,000 covers the
+> scope set out in section 2." Shape the rewrite so this remains true.*
+
+`draft_rewrite` gains `constraints: Sequence[str] = ()`, appended to its user message. Nothing else
+about DRAFT changes.
+
+The re-audit is passed the **original instruction only** — not the constraint. If the second draft
+failed to honour the held clause, a neutral audit flags it again, which is the correct outcome. An
+audit told what the draft was trying to do would be inclined to grant that it succeeded.
+
+### 15.4 Re-audit exactly when the text changed
+
+§14.3 said round 2 draws from the next unasked group. That covers leftovers but misses the more
+interesting case: an answer can *create* a conflict that did not exist when the question was asked.
+Hold the fee, trim the scope to fit, and the executive summary now promises deliverables the scope
+no longer contains.
+
+- **After (a)**, the text is new and unchecked, so it is audited; round 2 comes from the new blocking
+  groups.
+- **After (b) or (c)**, the text is byte-identical to text already audited. Re-auditing it would
+  spend a call to ask the same question of the same words. Round 2 comes from the next unasked group
+  of the original decision.
+
+Ripples follow the same rule: replaced from the fresh audit after (a), carried over from the session
+after (b) and (c), since ripples describing deleted text are worse than no ripples.
+
+### 15.5 A question is never asked twice
+
+`RewriteSession` gains `asked_section_ids: list[str]`, appended to whenever a question is composed.
+A blocking group naming one of them is demoted to a ripple rather than raised again.
+
+This is not hypothetical. Branch (a) can redraft, fail to honour the constraint, and produce the
+identical finding — and re-asking a question the author has already answered is a sharper version of
+the interrupt fatigue §2 warns about, because it also says the tool did not listen.
+
+### 15.6 The cap, and saying what was assumed
+
+Within `resume()` the order is fixed: record the answer, do the work, then decide whether another
+question is allowed. A question may be asked while `len(session.answers) < 2`.
+
+```
+answers == []        →  start() asked question 1
+answers == ["b"]     →  a second question is allowed
+answers == ["b","a"] →  the cap is spent; complete with assumptions
+```
+
+Two questions, ever. `answers` is appended **after** any model call returns, so a 502 mid-resume does
+not consume a round: the session survives intact and the author can retry.
+
+Blocking groups still outstanding when the cap is spent become plain sentences on the result:
+
+```python
+class RewriteComplete(BaseModel):
+    ...
+    assumptions: list[str] = []   # "Proceeding with the rewrite; 4. Fees and Payment
+                                  #  left as it stands."
+```
+
+A separate field rather than another ripple, because an assumption is a decision the agent made
+*instead of* asking, and burying it among proposed edits would hide exactly the thing §7 promises to
+state.
+
+### 15.7 `declined` is a round-1 outcome only
+
+`instruction_applicable` is honoured in `start()` and ignored in `resume()`. Round 1 already
+established that the instruction applies to the section; a flip on re-audit is far more likely model
+noise than a genuine reversal, and acting on it would discard work the author has already answered
+two questions about. The asymmetry is deliberate and stated here so it does not read as an omission.
+
+### 15.8 Where the loop lives
+
+A new module, `app/loop.py`, owns the suspendable run and the session lifecycle:
+
+```python
+Outcome = Completed | Asking | Declined
+
+def start(document, *, section_id, instruction) -> Outcome
+def resume(session_id, *, option_key) -> Outcome
+```
+
+`start()` is phase 3's `/rewrite` body moved unchanged; that step is a pure refactor and the existing
+suite must pass untouched. `main.py` returns to being what its docstring claims — validation,
+mapping and turning model failures into 502s.
+
+The alternative was leaving both endpoints in `main.py`. Rejected: the branch semantics, the cap and
+the assumption text are the phase-4 equivalent of `policy.py`, and logic reachable only through
+`TestClient` is logic that does not get tested properly. This is one module and two functions, not a
+state machine or a job queue — the run still suspends by returning, exactly as §6 specced.
+
+### 15.9 Edge cases
+
+Named here so they are handled deliberately rather than discovered, per §10:
+
+| Case | Response |
+|---|---|
+| unknown `session_id` | 404, readable |
+| unrecognised `option_key` | 422 |
+| answering a session that already finished | 409, "this rewrite has already finished" — the stale-tab case |
+| the document is gone from the store | 404, "upload it again" — real, since state is in memory |
+| the model fails during a (a) redraft | 502; session intact, round not consumed |
+| the redraft still conflicts with the held section | demoted to a ripple, never re-asked (§15.5) |
+| the re-audit finds a different section broken | that is round 2 (§15.4) |
+| the re-audit finds nothing | complete |
+| the cap is spent with groups outstanding | complete, with `assumptions` (§15.6) |
+
+### 15.10 Three phase-3 gaps closed alongside
+
+Small, and each one is in the path phase 4 exercises:
+
+- **`is_resolvable` can ground a resolution in the section being rewritten.** `decide()` receives the
+  original sections, including the old text of the section under edit — so a finding claiming "the
+  rewritten section already resolves this", quoting text the draft is about to delete, verifies and
+  buys silence. `decide()` gains the target section id and refuses to ground anything in it. This is
+  a hole in the §14.2 verification story and belongs closed before the loop leans on it harder.
+- **Ripples never reach the browser.** The API returns them; `lib/api.ts` has no field for them, so
+  they are dropped. Hiding part of a document from the author is the class of bug this tool exists to
+  prevent, and it is currently happening in our own front end.
+- **`compose_question` takes `instruction` and never uses it**, while its prompt forbids re-asking an
+  instruction the model is never shown. Wired in.
+
+### 15.11 Testing
+
+Conventions from phases 0–3 hold: offline, the model substituted at the single `llm.py` seam,
+findings hand-built including dishonest ones, `.docx` fixtures built in memory.
+
+- **`tests/test_loop.py`** (new) — branch semantics, cap arithmetic, already-asked suppression,
+  assumption text, ripple carry-over versus replacement. No HTTP and no network: this is where the
+  phase-4 judgement is defended, the way `test_policy.py` defends phase 3's.
+- **`tests/test_api.py`** — every row of §15.9, plus a full two-round path.
+- **`tests/test_policy.py`** — a finding grounding its resolution in the section being rewritten.
+- **`tests/test_question.py`** — the instruction reaches the prompt.
+- **`tests/test_calibration.py`** — one opt-in live case asserting the loop terminates within two
+  rounds and never 500s. Outcome only, never wording, per §11.
+
+### 15.12 Build order
+
+Eleven steps, each independently testable and committable.
+
+| # | Step | Exit criterion |
+|---|---|---|
+| 1 | `Branch` enum; wire `instruction` into `compose_question` | existing question tests pass; instruction appears in the prompt |
+| 2 | Self-reference guard in `policy.decide` | a resolution grounded in the rewritten section fails closed |
+| 3 | `draft_rewrite(constraints=...)` | the constraint appears in the user message |
+| 4 | Refactor: `loop.start()`, `main.py` maps | all existing tests pass unchanged |
+| 5 | `loop.resume()` — the three branches | branch tests pass; no cap yet |
+| 6 | Cap, assumptions, already-asked suppression | cap tests pass |
+| 7 | `POST /rewrite/{session_id}/answer` | §15.9 passes end to end |
+| 8 | `api.ts`: response union, `ripples`, `assumptions`, `answerQuestion()` | types compile against the real API |
+| 9 | `QuestionPanel` | question and lettered options render; a click posts |
+| 10 | `ResultPanel`: ripples, assumptions, `declined` | nothing the backend returns is dropped |
+| 11 | Live calibration case; README and `docs/status.md` | phase 4 marked done, honestly |
+
+Steps 1–3 are prep, 4 is a pure refactor, 5–7 are the feature, 8–10 the front end. Roughly two hours
+rather than the one estimated in `docs/status.md`: step 10 alone turns a single-state component into
+a four-state one.
