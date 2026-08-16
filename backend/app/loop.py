@@ -16,6 +16,7 @@ from .agent import draft_rewrite, find_section
 from .audit import audit_rewrite
 from .policy import FindingGroup, Ripple, decide, to_ripple
 from .question import Branch, Question, compose_question
+from .text import normalize
 
 
 class UnknownDocument(LookupError):
@@ -137,6 +138,29 @@ def hold_constraint(group: FindingGroup) -> str:
     )
 
 
+RECHECK_REFUSED = (
+    "Could not re-check the rewrite against the rest of the document. Anything "
+    "listed as affected was found before this change and may be out of date."
+)
+
+
+def merge_ripples(flagged: list[Ripple], found: list[Ripple]) -> list[Ripple]:
+    """Author-requested flags first, then what the audit found, without repeats.
+
+    A section the author asked to have flagged will often be reported by a later
+    audit as well. Showing it twice reads as two problems.
+    """
+    seen: set[tuple[str, str]] = set()
+    out: list[Ripple] = []
+    for ripple in [*flagged, *found]:
+        key = (ripple.section_id, normalize(ripple.quote))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ripple)
+    return out
+
+
 def assumption_for(group: FindingGroup) -> str:
     """What the agent decided once it had spent its two questions.
 
@@ -168,6 +192,8 @@ def resume(session_id: str, *, option_key: str) -> Outcome:
     branch = Branch(option_key)  # ValueError on anything else, by design
     asked, remaining = session.groups[0], session.groups[1:]
     by_id = {section.id: section for section in document.sections}
+    flagged = list(session.flagged)
+    notes: list[str] = []
 
     if branch is Branch.HOLD:
         # New text, so it gets audited. The audit is given the ORIGINAL
@@ -187,24 +213,40 @@ def resume(session_id: str, *, option_key: str) -> Outcome:
             instruction=session.instruction,
             new_text=draft.new_text,
         )
-        # `instruction_applicable` is honoured in `start` and ignored here. Round
-        # one already established that the instruction applies; a flip now is far
-        # more likely model noise than a real reversal, and acting on it would
-        # discard work the author has already answered a question about.
         decision = decide(
             audit, document.sections, rewritten_section_id=session.section_id
         )
         new_text = draft.new_text
-        ripples = list(decision.ripples)
-        groups = list(decision.groups)
+
+        if decision.action == "decline":
+            # `instruction_applicable` is honoured in `start` and never acted on
+            # here. Round one already established that the instruction applies, so
+            # a flip now is far more likely model noise than a real reversal, and
+            # declining would discard work the author has answered a question for.
+            #
+            # But it is not nothing either: the re-audit refused to evaluate, so
+            # we know nothing about this draft. Reporting an empty ripple list
+            # would render "I refused to look" identically to "I looked and found
+            # nothing", which is the failure this whole tool exists to prevent.
+            # Keep what round one found, say the check was inconclusive, stop.
+            found = list(session.ripples)
+            groups = []
+            notes.append(RECHECK_REFUSED)
+        else:
+            # New text, so what the previous audit found described a draft that no
+            # longer exists. Those ripples are replaced rather than carried.
+            found = list(decision.ripples)
+            groups = list(decision.groups)
     else:
         # Byte-identical to text that was already audited, so auditing it again
         # would spend a call to ask the same question of the same words.
         new_text = session.draft_text
-        ripples = list(session.ripples)
+        found = list(session.ripples)
         groups = list(remaining)
         if branch is Branch.FLAG:
-            ripples.extend(to_ripple(finding, by_id) for finding in asked.findings)
+            # An instruction, not a detection — so it goes somewhere a later
+            # redraft cannot overwrite.
+            flagged.extend(to_ripple(finding, by_id) for finding in asked.findings)
 
     # Only now: every model call has returned, so a failure above leaves the
     # session exactly as it was and the author can retry without burning a round.
@@ -215,14 +257,15 @@ def resume(session_id: str, *, option_key: str) -> Outcome:
     # again. Branch (a) can redraft, miss its constraint, and produce the
     # identical finding; re-asking would say the tool was not listening.
     fresh = [g for g in groups if g.section_id not in session.asked_section_ids]
-    ripples.extend(
+    found.extend(
         to_ripple(finding, by_id)
         for group in groups
         if group.section_id in session.asked_section_ids
         for finding in group.findings
     )
 
-    session.ripples = ripples
+    session.ripples = found
+    session.flagged = flagged
     session.groups = fresh
 
     # Two questions, ever. `answers` already holds this round's, so one answer
@@ -245,6 +288,6 @@ def resume(session_id: str, *, option_key: str) -> Outcome:
         section_id=section.id,
         old_text=section.text,
         new_text=new_text,
-        ripples=ripples,
-        assumptions=[assumption_for(group) for group in fresh],
+        ripples=merge_ripples(flagged, found),
+        assumptions=[*notes, *(assumption_for(group) for group in fresh)],
     )

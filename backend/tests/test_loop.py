@@ -371,3 +371,83 @@ def test_a_session_that_asks_again_is_not_yet_finished(document_id, model):
     loop.resume(asking.session_id, option_key="c")
 
     assert store.get_session(asking.session_id).completed is False
+
+
+# --- a flag is an instruction, not a detection ---------------------------
+
+
+def two_group_audit() -> AuditResult:
+    return AuditResult(
+        instruction_applicable=True, findings=[fee_finding(), timeline_finding()]
+    )
+
+
+def test_a_flag_the_author_asked_for_survives_a_later_redraft(document_id, model):
+    """Round 1: "flag the fees". Round 2: "hold the timeline", which re-drafts.
+
+    The fresh audit legitimately replaces what the audit found, because it
+    describes text that no longer exists. It must not also throw away an
+    instruction the author gave — losing that is the tool not listening.
+    """
+    model["audits"] = [
+        two_group_audit(),
+        AuditResult(instruction_applicable=True, findings=[]),
+    ]
+
+    asking = ask(document_id)
+    loop.resume(asking.session_id, option_key="b")     # flag the fees
+    final = loop.resume(asking.session_id, option_key="a")  # hold the timeline
+
+    assert isinstance(final, loop.Completed)
+    assert "s4" in [ripple.section_id for ripple in final.ripples]
+
+
+def test_a_flag_is_not_duplicated_when_the_re_audit_finds_it_again(document_id, model):
+    model["audits"] = [
+        two_group_audit(),
+        AuditResult(instruction_applicable=True, findings=[fee_finding()]),
+    ]
+
+    asking = ask(document_id)
+    loop.resume(asking.session_id, option_key="b")
+    final = loop.resume(asking.session_id, option_key="a")
+
+    assert [r.section_id for r in final.ripples].count("s4") == 1
+
+
+# --- a refused re-check is not a clean bill of health --------------------
+
+
+def test_a_refused_re_audit_does_not_report_silence(document_id, model):
+    """`instruction_applicable: false` on the re-audit means the model declined to
+    evaluate. Returning an empty ripple list would render "I refused to look"
+    identically to "I looked and found nothing" — the exact failure this tool
+    exists to prevent."""
+    model["audits"] = [
+        AuditResult(
+            instruction_applicable=True,
+            findings=[fee_finding(), summary_finding(kind="stale_reference")],
+        ),
+        AuditResult(instruction_applicable=False, inapplicable_reason="no"),
+    ]
+
+    asking = ask(document_id)
+    final = loop.resume(asking.session_id, option_key="a")
+
+    assert isinstance(final, loop.Completed)
+    assert "s1" in [r.section_id for r in final.ripples], "round 1's ripple was dropped"
+    assert any("re-check" in a for a in final.assumptions), final.assumptions
+
+
+def test_a_refused_re_audit_still_completes_rather_than_declining(document_id, model):
+    """Declining mid-loop would discard work the author has already answered for."""
+    model["audits"] = [
+        AuditResult(instruction_applicable=True, findings=[fee_finding()]),
+        AuditResult(instruction_applicable=False, inapplicable_reason="no"),
+    ]
+
+    asking = ask(document_id)
+    final = loop.resume(asking.session_id, option_key="a")
+
+    assert isinstance(final, loop.Completed)
+    assert final.new_text == SECOND_DRAFT

@@ -34,6 +34,12 @@ class RewriteSession(BaseModel):
     finding, and re-asking would tell the author the tool was not listening.
     `completed` makes a finished session terminal, so a stale tab answering twice
     gets a clear 409 rather than silently re-running the loop.
+
+    `ripples` and `flagged` are kept apart because they mean different things.
+    `ripples` is what an audit found, and a redraft replaces it — those findings
+    describe text that no longer exists. `flagged` is what the author asked to
+    have flagged, which is an instruction rather than a detection, and no later
+    redraft may throw it away.
     """
 
     document_id: str
@@ -42,6 +48,7 @@ class RewriteSession(BaseModel):
     draft_text: str
     groups: list[FindingGroup]
     ripples: list[Ripple]
+    flagged: list[Ripple] = []
     answers: list[str] = []
     asked_section_ids: list[str] = []
     completed: bool = False
