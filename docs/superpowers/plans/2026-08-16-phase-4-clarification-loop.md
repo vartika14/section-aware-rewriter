@@ -1062,7 +1062,8 @@ def model(monkeypatch):
     `drafts` is a queue: the first draft is popped for round one, the second for
     a branch (a) redraft. `audits` is the same for audit results. `calls` records
     every model call so a test can assert one did NOT happen — which is the point
-    of branches (b) and (c).
+    of branches (b) and (c). `prompts` keeps what DRAFT was actually sent, so the
+    constraint on a second draft can be checked rather than assumed.
     """
     state = {
         "drafts": [FIRST_DRAFT, SECOND_DRAFT],
@@ -1071,10 +1072,12 @@ def model(monkeypatch):
             AuditResult(instruction_applicable=True, findings=[]),
         ],
         "calls": [],
+        "prompts": [],
     }
 
     def draft(**kwargs):
         state["calls"].append("draft")
+        state["prompts"].append(kwargs["user"])
         return kwargs["schema"](new_text=state["drafts"].pop(0))
 
     def audit(**kwargs):
@@ -1113,14 +1116,19 @@ def test_holding_the_other_section_produces_a_second_draft(document_id, model):
 
 
 def test_the_second_draft_is_told_what_it_must_not_break(document_id, model):
-    """A constraint the model never sees is a constraint that does nothing."""
+    """A constraint the model never sees is a constraint that does nothing.
+
+    Asserted against the prompt DRAFT actually received, not against the session:
+    by the time resume returns, `groups` holds the fresh audit's findings, so
+    reading it back would test bookkeeping rather than the thing that matters.
+    """
     asking = ask(document_id)
 
     loop.resume(asking.session_id, option_key="a")
 
-    assert "4. Fees and Payment" in loop.hold_constraint(
-        store.get_session(asking.session_id).groups[0]
-    )
+    second_prompt = model["prompts"][1]
+    assert "4. Fees and Payment must stand exactly as written" in second_prompt
+    assert "A fixed fee of EUR 48,000" in second_prompt
 
 
 def test_holding_audits_the_new_text(document_id, model):
