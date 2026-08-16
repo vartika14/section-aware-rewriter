@@ -1,4 +1,4 @@
-# Status — 14 August 2026
+# Status — 16 August 2026
 
 Working notes. The reviewer-facing document is the [README](../README.md); the
 reasoning behind the design is in
@@ -12,16 +12,16 @@ reasoning behind the design is in
 | 1 · Upload → parse → sections | A `.docx` dropped in the browser lists its headings | **done** |
 | 2 · Naive rewrite | Select a section, type an instruction, see new text | **done** |
 | 3 · Audit + decide | Structured `Finding[]`; pure-Python ask/don't-ask | **done** |
-| 4 · Clarification loop | Question renders, option clicked, rewrite completes | next |
-| 5 · Edges, fixtures, README | Fixture cases incl. a true negative; README | — |
+| 4 · Clarification loop | Question renders, option clicked, rewrite completes | **done** |
+| 5 · Edges, fixtures, README | Fixture cases incl. a true negative; README | next |
 
-Roughly 4.5 hours spent of the 4–8 hour timebox. 83 offline tests passing in
-under 3 seconds, plus 4 opt-in calibration tests against the real model.
+Roughly 6.5 hours spent of the 4–8 hour timebox. 118 offline tests passing in
+about 3 seconds, plus 5 opt-in calibration tests against the real model.
 
-Phase 4 is the back half of the loop: `POST /rewrite/{session_id}/answer`,
-resuming the draft with the answer as an added constraint, the two-round cap,
-and the front end rendering the question. The session record it resumes from
-already exists (`store.RewriteSession`) and is populated by `/rewrite`.
+The loop is closed end to end: upload, pick a section, instruct, get a question,
+answer it, and see the result — with ripples and any stated assumptions. What
+remains for phase 5 is the sample document deserving a pass in your own words,
+and a last read of the reviewer-facing docs.
 
 ## What exists
 
@@ -36,18 +36,22 @@ backend/app/
                 target section marked [REWRITE].
   audit.py      Finding/AuditResult + audit_rewrite(). The second, neutrally
                 framed model call, plus id repair on what it returns.
-  policy.py     The interrupt policy. Pure Python, no model call, 28 tests.
+  policy.py     The interrupt policy. Pure Python, no model call, 32 tests.
   question.py   Python builds the branches; the model only phrases them.
+  loop.py       The suspendable run. Which branch re-drafts, when to audit
+                again, when to stop asking. No HTTP, so it is tested directly.
   text.py       normalize() — shared by the audit boundary and the policy.
   store.py      In-memory dict. Persistence is out of scope per the brief.
-  main.py       POST /documents, POST /rewrite.
+  main.py       POST /documents, POST /rewrite, POST /rewrite/{id}/answer.
+                Validation and mapping only; the run lives in loop.py.
 backend/scripts/
   smoke_test.py        Phase 0 connectivity check.
   make_sample_docx.py  Generates the Meridian proposal used for development.
 frontend/
   lib/api.ts           Typed calls; the only place fetch lives.
   app/page.tsx         Container: document, selection, result, error state.
-  app/components/      UploadPanel, SectionList, InstructionPanel, ResultPanel.
+  app/components/      UploadPanel, SectionList, InstructionPanel,
+                       QuestionPanel, ResultPanel.
 ```
 
 ## Verified, not assumed
@@ -104,15 +108,43 @@ the kind *and* claimed the document resolved it — two independent paths to
 silence — and the Python policy overrode both. That is the argument for keeping
 the decision out of the prompt.
 
+## What phase 4 measured
+
+Run against the real model on the sample proposal, `2. Scope of Work`, with
+*"Make this concrete. List the actual deliverables and drop the hedging."*
+
+- **Round 1 asked about the fee**, as phase 3 did — the fee assumes the scope in
+  section 2 and caps interviews at twelve.
+- **Branch (a) honoured its constraint.** The second draft came back with
+  "interview up to twelve key stakeholders", down from a first draft that had
+  named three deliverables and no cap. The constraint is built in Python from the
+  finding group, so what the redraft was held to is a string a test can read.
+- **The re-audit flagged the same section again, and the policy would have asked
+  a second time.** Instrumented, `decide` on the second draft returned
+  `action="ask"` with `groups=["s5"]` — the fee section, all over again. What
+  stopped it was the loop's own rule, not the policy: `s5` was already in
+  `asked_section_ids`, so it was demoted to a ripple. **This is the thing to
+  demo.** Without that rule the agent asks the author the same question twice
+  in a row, which reads as not having listened.
+- **The model labelled that repeat finding `stale_reference`** — the same
+  mislabelling phase 3 measured, on the same clause, still happening. It did not
+  matter, because the quote carries the word "fee" and `quotes_a_commitment`
+  refuses to let a label buy silence. Two independent guards catching the same
+  model habit is worth saying out loud.
+
+Note what did *not* need measuring: branches (b) and (c) make no model call at
+all, so there is nothing to be non-deterministic about. That is a property of the
+design rather than a lucky result.
+
 ## How to test
 
 From `backend/`, with `.env` filled in:
 
 ```bash
-./.venv/bin/python -m pytest tests/ -q          # 83 tests, ~3s, no network
+./.venv/bin/python -m pytest tests/ -q          # 118 tests, ~3s, no network
 ./.venv/bin/python -m scripts.smoke_test        # one real Azure call
 
-# The calibration cases, against the real model. Opt-in: ~20s and real tokens.
+# The calibration cases, against the real model. Opt-in: ~23s and real tokens.
 RUN_LIVE_TESTS=1 ./.venv/bin/python -m pytest tests/test_calibration.py -q
 ```
 
@@ -125,8 +157,9 @@ npm run dev                                                        # frontend/
 
 Then at http://localhost:3000: upload `backend/sample/meridian-proposal.docx`,
 pick **2. Scope of Work**, and enter *"Make this concrete. List the actual
-deliverables and drop the hedging."* The API now returns a question for this
-case; the front end does not render it yet, which is phase 4.
+deliverables and drop the hedging."* The agent asks about the fixed fee; pick any
+of the three branches and the rewrite completes. Branch (a) is the one that
+produces a second draft.
 
 Backend only, without the UI. Note the ids: the sample's title line takes `s1` as
 an untitled opening, so **2. Scope of Work is `s3`** and 4. Fees is `s5`. Getting
@@ -145,32 +178,33 @@ amber warning that the split is a guess), a non-`.docx` file, and an instruction
 that makes no sense for the chosen section (expect `status: declined` with a
 reason rather than a mangled rewrite).
 
-## Phase 4 — the back half of the loop
+## How phase 4 was built
 
-One hour. The question is asked; nothing yet consumes the answer.
+Eleven commits, spec at `superpowers/specs/…§15`, plan at
+`superpowers/plans/2026-08-16-phase-4-clarification-loop.md`. The shape worth
+knowing:
 
-### 4a. `POST /rewrite/{session_id}/answer`
+- **Only branch (a) returns to the model.** "Hold that section" is the author
+  changing their mind about the rewrite. "Flag it" and "leave it" are the author
+  approving the draft they were shown, so those return `session.draft_text`
+  untouched — going back to the model there could hand back different text than
+  the one just accepted. `test_flagging_calls_the_model_not_at_all` is that rule
+  in executable form.
+- **Re-audit follows the same rule:** audit exactly when the text changed.
+- **`loop.py` owns the run**, `main.py` owns HTTP. The extraction was a separate
+  commit whose exit criterion was that no test file changed.
+- **`declined` is a round-1 outcome only.** A flipped `instruction_applicable` on
+  re-audit is more likely model noise than a real reversal, and acting on it
+  would discard work the author has already answered a question about.
 
-Takes `{option_key}`, loads the `RewriteSession`, and re-enters DRAFT with the
-chosen branch appended as an additional constraint — not a fresh rewrite from
-nothing, since the draft that provoked the question is already stored. Then
-audits again, because resolving one conflict can create another.
+## Phase 5 — what is left
 
-Returns the same three shapes as `/rewrite`, so the front end renders on
-`status` alone and the loop can suspend twice.
-
-### 4b. The two-round cap
-
-Spec §7. After two questions the agent proceeds and states its assumption in the
-result rather than asking a third time. `RewriteSession.answers` already exists
-to count rounds; `Decision.groups` beyond the first are what a second round would
-draw from.
-
-### 4c. The front end
-
-`ResultPanel` currently assumes `status: "complete"`. It needs to render the
-question with its lettered options, post the choice back, and show ripples — plus
-the `declined` case, which is a result rather than an error.
+- The sample proposal is generated by a script. The brief says choosing a
+  document that makes the conflict problem visible is part of the exercise, so it
+  deserves a pass in your own words.
+- A last read of the README as a reviewer would meet it.
+- Rehearse the demo: the true negative first, then the fee question, then branch
+  (a) and the repeat-finding suppression.
 
 ## Deliberate cuts, to state in the README
 
@@ -188,13 +222,9 @@ the `declined` case, which is a result rather than an error.
 
 - `backend/.env` holds the Azure key in plaintext. Gitignored and verified as
   such, but worth asking Sherpa to rotate it after the assignment.
-- The sample proposal is generated by a script. It is a starting point — the
-  brief says choosing a document that makes the conflict problem visible is part
-  of the exercise, so it deserves a pass in your own words.
-- The README does not yet explain conflict detection or the interrupt policy.
-  That is phase 5, and the spec already holds the raw material.
-- The front end still assumes every rewrite completes. `/rewrite` can now return
-  `needs_clarification` and `declined`, and neither renders. Phase 4.
+- Sessions and documents are never evicted from the in-memory store. Correct for
+  a single-user demo, wrong for anything else — and worth saying before someone
+  asks.
 - Section ids are positional, so a document whose first line is a bare title
   shifts every numbered section by one. Correct, but a sharp edge — the sample
   document has exactly this shape, and it silently misaimed three calibration

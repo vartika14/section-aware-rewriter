@@ -18,9 +18,10 @@ from pathlib import Path
 
 import pytest
 
+from app import loop, store
 from app.audit import audit_rewrite
 from app.agent import draft_rewrite
-from app.parsing import parse_docx
+from app.parsing import ParsedDocument, parse_docx
 from app.policy import decide
 
 pytestmark = pytest.mark.skipif(
@@ -123,3 +124,32 @@ def test_tightening_the_summary_prose_asks_nothing(sections):
         "asked a question about a pure prose edit: "
         f"{[f.explanation for g in decision.groups for f in g.findings]}"
     )
+
+
+def test_the_loop_terminates_within_two_questions(sections):
+    """The whole loop, against the real model, on the real document.
+
+    Asserts only that it ends — never on wording, and never on which branch the
+    audit provokes. Temperature 0 is not bit-deterministic on this deployment,
+    so a golden output would be a flaky test wearing a confident face.
+
+    Branch (a) is chosen every round because it is the only one that re-drafts,
+    so it is the only path that can produce a second, genuinely new question.
+    """
+    document_id = store.save_document(
+        ParsedDocument(sections=sections, headings_detected=True)
+    )
+    outcome = loop.start(
+        document_id,
+        section_id=id_of(sections, "Scope of Work"),
+        instruction="Make this concrete. List the actual deliverables and drop "
+        "the hedging.",
+    )
+
+    rounds = 0
+    while isinstance(outcome, loop.Asking):
+        rounds += 1
+        assert rounds <= 2, "the two-question cap did not hold"
+        outcome = loop.resume(outcome.session_id, option_key="a")
+
+    assert isinstance(outcome, (loop.Completed, loop.Declined))
