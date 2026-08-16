@@ -30,19 +30,52 @@ async function unwrap<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export type Ripple = {
+  section_id: string;
+  heading: string;
+  quote: string;
+  kind: string;
+  explanation: string;
+  proposed_fix: string | null;
+  /** False when the quoted clause could not be found where the model said it
+   *  was — a possibly invented conflict, shown but never asked about. */
+  verified: boolean;
+};
+
+export type Option = { key: string; label: string };
+
 /**
- * `status` is a discriminator. Today "complete" is the only arm; the
- * clarification loop adds "needs_clarification" alongside it, and the UI
- * switches on this field rather than being restructured.
+ * `status` is the discriminator. All three arms come from both `/rewrite` and
+ * `/rewrite/{id}/answer`, so a second question renders exactly like the first.
  */
 export type RewriteComplete = {
   status: "complete";
   section_id: string;
   old_text: string;
   new_text: string;
+  ripples: Ripple[];
+  /** What the agent decided once it had spent its two questions. */
+  assumptions: string[];
 };
 
-export type RewriteResult = RewriteComplete;
+export type RewriteNeedsClarification = {
+  status: "needs_clarification";
+  session_id: string;
+  section_id: string;
+  question: string;
+  options: Option[];
+};
+
+export type RewriteDeclined = {
+  status: "declined";
+  section_id: string;
+  reason: string;
+};
+
+export type RewriteResult =
+  | RewriteComplete
+  | RewriteNeedsClarification
+  | RewriteDeclined;
 
 export async function rewriteSection(input: {
   documentId: string;
@@ -58,6 +91,19 @@ export async function rewriteSection(input: {
         section_id: input.sectionId,
         instruction: input.instruction,
       }),
+    }),
+  );
+}
+
+export async function answerQuestion(input: {
+  sessionId: string;
+  optionKey: string;
+}): Promise<RewriteResult> {
+  return unwrap<RewriteResult>(
+    await fetch(`${API_BASE}/rewrite/${input.sessionId}/answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ option_key: input.optionKey }),
     }),
   );
 }
