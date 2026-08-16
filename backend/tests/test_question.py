@@ -7,10 +7,12 @@ instead. That keeps the graded judgement in code that can be tested offline whil
 the consultant still reads a sentence rather than a template.
 """
 
+import pytest
+
 from app.audit import Finding
 from app.parsing import Section
 from app.policy import FindingGroup
-from app.question import Option, build_options, compose_question
+from app.question import Branch, Option, Question, build_options, compose_question
 
 SECTIONS = [
     Section(id="s2", heading="2. Scope of Work", text="The engagement is advisory."),
@@ -64,6 +66,53 @@ def test_the_branches_do_not_depend_on_the_model_being_reachable():
     again = build_options(group())
 
     assert options == again
+
+
+# --- the branches have names, not just keys ------------------------------
+
+
+def test_each_branch_key_has_a_name_the_resume_path_can_switch_on():
+    """`loop.py` must not switch on a bare "a". The meaning lives in one place."""
+    assert Branch.HOLD.value == "a"
+    assert Branch.FLAG.value == "b"
+    assert Branch.ACCEPT.value == "c"
+
+
+def test_the_branch_keys_and_the_rendered_options_cannot_drift_apart():
+    assert [option.key for option in build_options(group())] == [
+        branch.value for branch in Branch
+    ]
+
+
+def test_an_unrecognised_key_is_not_a_branch():
+    with pytest.raises(ValueError):
+        Branch("z")
+
+
+# --- the instruction reaches the prompt -----------------------------------
+
+
+def test_the_phrasing_call_is_told_what_the_author_asked_for(monkeypatch):
+    """The system prompt forbids re-asking the instruction. A model that is never
+    shown the instruction cannot honour that."""
+    seen = {}
+
+    def capture(*, system, user, schema, **kwargs):
+        seen["user"] = user
+        return Question(
+            text='It says "A fixed fee of EUR 48,000". Which way?',
+            options=build_options(group()),
+        )
+
+    monkeypatch.setattr("app.question.structured_completion", capture)
+
+    compose_question(
+        group(),
+        sections=SECTIONS,
+        instruction="Make this concrete. Name the deliverables.",
+    )
+
+    assert "Make this concrete. Name the deliverables." in seen["user"]
 
 
 # --- the question itself -------------------------------------------------

@@ -9,6 +9,8 @@ So the graded judgement stays in code that can be tested without a network, and
 the consultant still reads prose rather than a mail-merge.
 """
 
+from enum import Enum
+
 from pydantic import BaseModel
 
 from .llm import structured_completion
@@ -34,15 +36,28 @@ Hard constraints:
 - No preamble, no apology, no offer to help further. Two sentences at most.
 """
 
+class Branch(str, Enum):
+    """What each lettered option actually means.
+
+    The key is what crosses the wire; the name is what `loop.py` switches on.
+    Keeping both in one place is the difference between a branch whose meaning is
+    checkable and one that lives inside a label string nobody parses.
+    """
+
+    HOLD = "a"      # hold the other section; reshape the rewrite to fit it
+    FLAG = "b"      # make the rewrite; flag the other section for review
+    ACCEPT = "c"    # make the rewrite; leave the other section as it stands
+
+
 # The three ways out of "this rewrite invalidates something elsewhere". They are
 # exhaustive by construction: either the other section wins, or the rewrite wins
 # and the other section is flagged, or the rewrite wins and the mismatch is
 # accepted. Anything a consultant might actually choose collapses into one of
 # these, which is why they can be generated rather than reasoned about.
 BRANCHES = [
-    ("a", "Hold {heading} as written, and shape the rewrite to fit it"),
-    ("b", "Make the rewrite, and flag {heading} for review"),
-    ("c", "Make the rewrite, and leave {heading} as it stands"),
+    (Branch.HOLD, "Hold {heading} as written, and shape the rewrite to fit it"),
+    (Branch.FLAG, "Make the rewrite, and flag {heading} for review"),
+    (Branch.ACCEPT, "Make the rewrite, and leave {heading} as it stands"),
 ]
 
 
@@ -59,8 +74,8 @@ class Question(BaseModel):
 def build_options(group: FindingGroup) -> list[Option]:
     """The branches, derived from the group with no model involved."""
     return [
-        Option(key=key, label=template.format(heading=group.heading))
-        for key, template in BRANCHES
+        Option(key=branch.value, label=template.format(heading=group.heading))
+        for branch, template in BRANCHES
     ]
 
 
@@ -117,8 +132,8 @@ def compose_question(
 
     conflicting = next((s for s in sections if s.id == group.section_id), None)
     user = (
-        f"The author asked for a rewrite of another section. It has a "
-        f"consequence for {group.heading}, which currently reads:\n\n"
+        f"The author asked for this rewrite: {instruction}\n\n"
+        f"It has a consequence for {group.heading}, which currently reads:\n\n"
         f"{conflicting.text if conflicting else ''}\n\n"
         f"---\n\nDrafted question: {deterministic.text}\n\n"
         + "\n".join(f"({o.key}) {o.label}" for o in options)
