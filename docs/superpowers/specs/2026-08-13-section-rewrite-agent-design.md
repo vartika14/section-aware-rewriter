@@ -408,6 +408,19 @@ class Branch(str, Enum):
 
 Keys stay `a`/`b`/`c` in the API. An unrecognised key is rejected at the HTTP boundary.
 
+The branches are exhaustive because only three things can give way when two sections disagree: the
+rewritten section gives way (a), the other section gives way — by the author's hand, since §13 bars
+the agent from writing outside the selected section (b), or neither gives way and the mismatch is
+accepted (c). This is why `build_options` can generate them rather than ask the model what the
+author's choices are.
+
+**A free-text fourth option was considered and rejected.** `{option_key, text}` would let an author
+answer "the fee is now EUR 60,000" instead of choosing a branch. It is more expressive and it is the
+wrong trade here: §5 names an open prompt as a failure mode, "answerable in one word" is the
+calibration target, and a text box quietly hands the judgement back to the human — which is the work
+the agent exists to do. An author with a new number takes branch (b) and edits the fee themselves,
+which is what they were going to do anyway.
+
 ### 15.3 The HOLD constraint is built in Python, not asked for
 
 The added constraint is generated deterministically from the `FindingGroup`, so what the second
