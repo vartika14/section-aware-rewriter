@@ -11,13 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAIError
 from pydantic import BaseModel, field_validator
 
-from . import store
-from .agent import draft_rewrite, find_section
-from .audit import audit_rewrite
+from . import loop, store
 from .llm import ModelRefusal
 from .parsing import Section, UnparseableDocument, parse_docx
-from .policy import Ripple, decide
-from .question import Option, compose_question
+from .policy import Ripple
+from .question import Option
 
 app = FastAPI(title="Section-aware rewrite agent")
 
@@ -67,13 +65,16 @@ class RewriteRequest(BaseModel):
 
 class RewriteComplete(BaseModel):
     """The rewrite stands. `ripples` are the consequences the policy judged not
-    worth interrupting for — shown so the consultant can act on them by hand."""
+    worth interrupting for — shown so the consultant can act on them by hand.
+    `assumptions` are what the agent decided once it had spent its two questions,
+    stated rather than buried."""
 
     status: Literal["complete"] = "complete"
     section_id: str
     old_text: str
     new_text: str
     ripples: list[Ripple] = []
+    assumptions: list[str] = []
 
 
 class RewriteNeedsClarification(BaseModel):
@@ -101,33 +102,42 @@ class RewriteDeclined(BaseModel):
 RewriteResponse = RewriteComplete | RewriteNeedsClarification | RewriteDeclined
 
 
+def _to_response(outcome: loop.Outcome) -> RewriteResponse:
+    """One mapper, so both endpoints answer in the same shapes."""
+    if isinstance(outcome, loop.Declined):
+        return RewriteDeclined(section_id=outcome.section_id, reason=outcome.reason)
+    if isinstance(outcome, loop.Asking):
+        return RewriteNeedsClarification(
+            session_id=outcome.session_id,
+            section_id=outcome.section_id,
+            question=outcome.question.text,
+            options=outcome.question.options,
+        )
+    return RewriteComplete(
+        section_id=outcome.section_id,
+        old_text=outcome.old_text,
+        new_text=outcome.new_text,
+        ripples=outcome.ripples,
+        assumptions=outcome.assumptions,
+    )
+
+
 @app.post("/rewrite", response_model=RewriteResponse)
 async def rewrite(request: RewriteRequest) -> RewriteResponse:
-    document = store.get_document(request.document_id)
-    if document is None:
+    try:
+        outcome = loop.start(
+            request.document_id,
+            section_id=request.section_id,
+            instruction=request.instruction,
+        )
+    except loop.UnknownDocument as exc:
         raise HTTPException(
             status_code=404, detail="No document with that id — upload it again."
-        )
-
-    try:
-        section = find_section(document.sections, request.section_id)
-    except KeyError as exc:
+        ) from exc
+    except loop.UnknownSection as exc:
         raise HTTPException(
             status_code=404, detail="No section with that id in this document."
         ) from exc
-
-    try:
-        draft = draft_rewrite(
-            sections=document.sections,
-            section_id=request.section_id,
-            instruction=request.instruction,
-        )
-        audit = audit_rewrite(
-            sections=document.sections,
-            section_id=request.section_id,
-            instruction=request.instruction,
-            new_text=draft.new_text,
-        )
     except (ModelRefusal, OpenAIError) as exc:
         # A refusal, a content filter or a transport error is an expected
         # operating condition for this app, not a crash. Say so plainly.
@@ -135,42 +145,4 @@ async def rewrite(request: RewriteRequest) -> RewriteResponse:
             status_code=502, detail=f"The model could not complete this rewrite: {exc}"
         ) from exc
 
-    decision = decide(
-        audit, document.sections, rewritten_section_id=request.section_id
-    )
-
-    if decision.action == "decline":
-        return RewriteDeclined(section_id=section.id, reason=decision.reason or "")
-
-    if decision.action == "complete":
-        return RewriteComplete(
-            section_id=section.id,
-            old_text=section.text,
-            new_text=draft.new_text,
-            ripples=decision.ripples,
-        )
-
-    # Suspend. One question per round, so the first group is asked now and any
-    # others wait — a human asked four questions stops reading at the second.
-    question = compose_question(
-        decision.groups[0],
-        sections=document.sections,
-        instruction=request.instruction,
-    )
-    session_id = store.save_session(
-        store.RewriteSession(
-            document_id=request.document_id,
-            section_id=request.section_id,
-            instruction=request.instruction,
-            draft_text=draft.new_text,
-            groups=decision.groups,
-            ripples=decision.ripples,
-        )
-    )
-
-    return RewriteNeedsClarification(
-        session_id=session_id,
-        section_id=section.id,
-        question=question.text,
-        options=question.options,
-    )
+    return _to_response(outcome)

@@ -25,6 +25,15 @@ class RewriteSession(BaseModel):
     `draft_text` is kept so the answer resumes from a rewrite that already
     exists rather than re-running the draft blind, and `groups` is kept because
     the answer only means anything against the question it was asked.
+
+    Invariant: `groups[0]` is the group currently being asked about. The rest are
+    what a second round would draw from.
+
+    `asked_section_ids` is what stops the same question being asked twice — a
+    second draft can fail to honour its constraint and hand back the identical
+    finding, and re-asking would tell the author the tool was not listening.
+    `completed` makes a finished session terminal, so a stale tab answering twice
+    gets a clear 409 rather than silently re-running the loop.
     """
 
     document_id: str
@@ -34,6 +43,8 @@ class RewriteSession(BaseModel):
     groups: list[FindingGroup]
     ripples: list[Ripple]
     answers: list[str] = []
+    asked_section_ids: list[str] = []
+    completed: bool = False
 
 
 def save_document(parsed: ParsedDocument) -> str:
