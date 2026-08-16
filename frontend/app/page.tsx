@@ -5,7 +5,13 @@ import { UploadPanel } from "./components/UploadPanel";
 import { SectionList } from "./components/SectionList";
 import { InstructionPanel } from "./components/InstructionPanel";
 import { ResultPanel } from "./components/ResultPanel";
-import { rewriteSection, type RewriteResult, type UploadResponse } from "@/lib/api";
+import { QuestionPanel } from "./components/QuestionPanel";
+import {
+  answerQuestion,
+  rewriteSection,
+  type RewriteResult,
+  type UploadResponse,
+} from "@/lib/api";
 
 export default function Home() {
   const [document, setDocument] = useState<UploadResponse | null>(null);
@@ -18,24 +24,34 @@ export default function Home() {
 
   const selected = document?.sections.find((s) => s.id === selectedId) ?? null;
 
-  async function handleInstruction(instruction: string) {
-    if (!document || !selectedId) return;
+  async function run(call: () => Promise<RewriteResult>) {
     setBusy(true);
     setError(null);
-    setResult(null);
     try {
-      setResult(
-        await rewriteSection({
-          documentId: document.document_id,
-          sectionId: selectedId,
-          instruction,
-        }),
-      );
+      setResult(await call());
     } catch (e) {
       setError(e instanceof Error ? e.message : "Rewrite failed.");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function handleInstruction(instruction: string) {
+    if (!document || !selectedId) return;
+    setResult(null);
+    await run(() =>
+      rewriteSection({
+        documentId: document.document_id,
+        sectionId: selectedId,
+        instruction,
+      }),
+    );
+  }
+
+  // The answer replaces the question in place, so a second question renders
+  // exactly where the first one was rather than stacking below it.
+  async function handleAnswer(sessionId: string, optionKey: string) {
+    await run(() => answerQuestion({ sessionId, optionKey }));
   }
 
   return (
@@ -99,6 +115,23 @@ export default function Home() {
 
           {error && (
             <p className="rounded-md bg-red-50 p-4 text-sm text-red-700">{error}</p>
+          )}
+
+          {result?.status === "needs_clarification" && (
+            <QuestionPanel
+              result={result}
+              busy={busy}
+              onAnswer={(optionKey) => handleAnswer(result.session_id, optionKey)}
+            />
+          )}
+
+          {/* Declining is a result, not an error: the instruction did not fit
+              the section, and saying so beats mangling it confidently. */}
+          {result?.status === "declined" && (
+            <div className="rounded-lg border border-slate-300 bg-white p-6">
+              <h2 className="font-semibold">Not rewritten</h2>
+              <p className="mt-2 text-sm text-slate-600">{result.reason}</p>
+            </div>
           )}
 
           {result?.status === "complete" && <ResultPanel result={result} />}
