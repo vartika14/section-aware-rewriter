@@ -41,7 +41,7 @@ Open http://localhost:3000.
 ./.venv/bin/python -m pytest tests/ -q
 ```
 
-118 tests, about three seconds, no network — the model seam is substituted. The
+124 tests, about three seconds, no network — the model seam is substituted. The
 interrupt policy and the clarification loop are the bulk of them, tested against
 hand-built findings including dishonest ones, because their job is to be right
 about whatever the model returns.

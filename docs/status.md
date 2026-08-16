@@ -15,7 +15,7 @@ reasoning behind the design is in
 | 4 · Clarification loop | Question renders, option clicked, rewrite completes | **done** |
 | 5 · Edges, fixtures, README | Fixture cases incl. a true negative; README | next |
 
-Roughly 6.5 hours spent of the 4–8 hour timebox. 118 offline tests passing in
+Roughly 6.5 hours spent of the 4–8 hour timebox. 124 offline tests passing in
 about 3 seconds, plus 5 opt-in calibration tests against the real model.
 
 The loop is closed end to end: upload, pick a section, instruct, get a question,
@@ -136,12 +136,30 @@ Note what did *not* need measuring: branches (b) and (c) make no model call at
 all, so there is nothing to be non-deterministic about. That is a property of the
 design rather than a lucky result.
 
+Two defects found afterwards by walking multi-round paths by hand, both from one
+cause — `resume` held ripples in a single list that branch (a) overwrote from the
+fresh audit:
+
+- **An explicit flag was discarded.** Answer "flag the fees" in round one, "hold
+  the timeline" in round two, and the fee flag vanished. Replacing what the
+  *audit* found is right, since it describes a draft that no longer exists.
+  Replacing what the *author* asked for is the tool not listening. `ripples` and
+  `flagged` are now separate on the session for exactly that reason.
+- **A refused re-audit reported silence.** `instruction_applicable: false` on the
+  re-check produced an empty ripple list, so "I refused to look" rendered
+  identically to "I looked and found nothing" — this project's own thesis
+  failing inside the project. A refused re-check now keeps round one's findings
+  and says on the result that it could not re-check.
+
+Worth raising unprompted: both were found by tracing paths no single test
+covered, not by a failing test. The suite was green throughout.
+
 ## How to test
 
 From `backend/`, with `.env` filled in:
 
 ```bash
-./.venv/bin/python -m pytest tests/ -q          # 118 tests, ~3s, no network
+./.venv/bin/python -m pytest tests/ -q          # 124 tests, ~3s, no network
 ./.venv/bin/python -m scripts.smoke_test        # one real Azure call
 
 # The calibration cases, against the real model. Opt-in: ~23s and real tokens.
