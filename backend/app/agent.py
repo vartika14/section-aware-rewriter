@@ -7,6 +7,8 @@ deliberately a separate call: a model asked to write and critique in one breath
 rationalises its own output.
 """
 
+from collections.abc import Sequence
+
 from pydantic import BaseModel
 
 from .llm import structured_completion
@@ -55,8 +57,20 @@ def find_section(sections: list[Section], section_id: str) -> Section:
 
 
 def draft_rewrite(
-    *, sections: list[Section], section_id: str, instruction: str
+    *,
+    sections: list[Section],
+    section_id: str,
+    instruction: str,
+    constraints: Sequence[str] = (),
 ) -> Draft:
+    """Rewrite one section.
+
+    `constraints` carries anything the author has since insisted on — on a second
+    draft, that the clause they chose to hold must survive intact. They are built
+    in Python from the finding group, never asked for, so what the second draft is
+    held to can be unit tested. An empty default keeps the first draft's prompt
+    exactly as it was.
+    """
     section = find_section(sections, section_id)
 
     user = (
@@ -65,6 +79,11 @@ def draft_rewrite(
         f"Rewrite the section marked {REWRITE_MARKER} ({section.heading}).\n\n"
         f"Instruction: {instruction}"
     )
+
+    if constraints:
+        user += "\n\nThe following must hold in your replacement:\n\n" + "\n\n".join(
+            constraints
+        )
 
     # Pinned to 0 like the audit, and for the same reason once removed: the
     # audit's only input is this draft, so a draft that varies makes the

@@ -96,3 +96,44 @@ def test_draft_rewrite_is_pinned_to_temperature_zero(monkeypatch):
 def test_draft_rewrite_rejects_an_unknown_section_id():
     with pytest.raises(KeyError):
         draft_rewrite(sections=SECTIONS, section_id="nope", instruction="Be concrete.")
+
+
+# --- constraints on a second draft ---------------------------------------
+
+
+def test_a_constraint_reaches_the_model(monkeypatch):
+    """Branch (a) re-drafts under something the author has just insisted on.
+    If it does not reach the prompt, the second draft is the first one again."""
+    seen = {}
+
+    def capture(*, system, user, schema, **kwargs):
+        seen["user"] = user
+        return schema(new_text="trimmed")
+
+    monkeypatch.setattr("app.agent.structured_completion", capture)
+
+    draft_rewrite(
+        sections=SECTIONS,
+        section_id="s2",
+        instruction="Make this concrete.",
+        constraints=["3. Fees must stand exactly as written."],
+    )
+
+    assert "3. Fees must stand exactly as written." in seen["user"]
+
+
+def test_no_constraints_leaves_the_prompt_as_it_was(monkeypatch):
+    """The first draft must not grow a stray empty section."""
+    seen = {}
+
+    def capture(*, system, user, schema, **kwargs):
+        seen["user"] = user
+        return schema(new_text="drafted")
+
+    monkeypatch.setattr("app.agent.structured_completion", capture)
+
+    draft_rewrite(
+        sections=SECTIONS, section_id="s2", instruction="Make this concrete."
+    )
+
+    assert "must hold" not in seen["user"]
