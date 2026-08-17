@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from . import store
 from .conflicts import Conflict, Note, decide, find_conflicts, ground, to_notes
 from .question import Branch, Question, compose_question
-from .rewrite import draft_section, find_section
+from .rewrite import draft_section, find_section, overlay_texts
 
 
 class UnknownDocument(LookupError):
@@ -48,17 +48,24 @@ class Declined(BaseModel):
 Outcome = Completed | Asking | Declined
 
 
-def start(document_id: str, *, section_id: str, instruction: str) -> Outcome:
+def start(
+    document_id: str, *, section_id: str, instruction: str,
+    current_texts: dict[str, str] | None = None,
+) -> Outcome:
     document = store.get_document(document_id)
     if document is None:
         raise UnknownDocument(document_id)
 
+    # Build the document as it currently stands: accepted edits filled in,
+    # original text everywhere else.
+    sections = overlay_texts(document.sections, current_texts or {})
+
     try:
-        section = find_section(document.sections, section_id)
+        section = find_section(sections, section_id)
     except KeyError as exc:
         raise UnknownSection(section_id) from exc
 
-    draft = draft_section(sections=document.sections, section_id=section_id, instruction=instruction)
+    draft = draft_section(sections=sections, section_id=section_id, instruction=instruction)
 
     if not draft.applicable:
         return Declined(
@@ -67,10 +74,10 @@ def start(document_id: str, *, section_id: str, instruction: str) -> Outcome:
         )
 
     conflicts = find_conflicts(
-        sections=document.sections, section_id=section_id,
+        sections=sections, section_id=section_id,
         instruction=instruction, new_text=draft.new_text,
     )
-    decision = decide(conflicts, document.sections, rewritten_id=section_id)
+    decision = decide(conflicts, sections, rewritten_id=section_id)
 
     if decision.action == "complete":
         return Completed(
@@ -78,14 +85,15 @@ def start(document_id: str, *, section_id: str, instruction: str) -> Outcome:
             new_text=draft.new_text, notes=decision.notes,
         )
 
-    heading = find_section(document.sections, decision.asking[0].section_id).heading
+    heading = find_section(sections, decision.asking[0].section_id).heading
     question = compose_question(
-        decision.asking, heading=heading, sections=document.sections, instruction=instruction
+        decision.asking, heading=heading, sections=sections, instruction=instruction
     )
     session_id = store.save_session(
         store.RewriteSession(
             document_id=document_id, section_id=section_id, instruction=instruction,
-            draft_text=draft.new_text, asking=decision.asking, notes=decision.notes,
+            draft_text=draft.new_text, context=sections,
+            asking=decision.asking, notes=decision.notes,
         )
     )
     return Asking(session_id=session_id, section_id=section.id, question=question)

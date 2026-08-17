@@ -91,6 +91,63 @@ def test_an_unknown_section_is_not_a_crash(document_id, model):
         orchestrator.start(document_id, section_id="s99", instruction="x")
 
 
+def test_current_texts_reach_the_draft_prompt(document_id, model, monkeypatch):
+    captured = {}
+
+    def draft(**kwargs):
+        captured["user"] = kwargs["user"]
+        return kwargs["schema"](applicable=True, new_text="drafted")
+
+    monkeypatch.setattr("app.rewrite.structured_completion", draft)
+
+    orchestrator.start(
+        document_id, section_id="s2", instruction="Be concrete.",
+        current_texts={"s4": "A fixed fee of EUR 90,000, renegotiated."},
+    )
+
+    assert "A fixed fee of EUR 90,000, renegotiated." in captured["user"]
+    assert "A fixed fee of EUR 48,000 covers it." not in captured["user"]
+
+
+def test_current_texts_reach_the_conflict_check_prompt(document_id, model, monkeypatch):
+    captured = {}
+
+    def detect(**kwargs):
+        captured["user"] = kwargs["user"]
+        return kwargs["schema"](findings=[])
+
+    monkeypatch.setattr("app.conflicts.structured_completion", detect)
+
+    orchestrator.start(
+        document_id, section_id="s2", instruction="Be concrete.",
+        current_texts={"s4": "A fixed fee of EUR 90,000, renegotiated."},
+    )
+
+    assert "A fixed fee of EUR 90,000, renegotiated." in captured["user"]
+
+
+def test_leaving_out_current_texts_still_works_as_before(document_id, model):
+    outcome = orchestrator.start(document_id, section_id="s2", instruction="Be concrete.")
+
+    assert isinstance(outcome, orchestrator.Completed)
+
+
+def test_a_pending_question_saves_a_snapshot_of_the_edited_document(document_id, model):
+    model["conflicts"] = [
+        Conflict(section_id="s4", quote="A fixed fee of EUR 90,000.",
+                 explanation="test", blocking=True)
+    ]
+
+    outcome = orchestrator.start(
+        document_id, section_id="s2", instruction="Be concrete.",
+        current_texts={"s4": "A fixed fee of EUR 90,000."},
+    )
+
+    assert isinstance(outcome, orchestrator.Asking)
+    saved = {s.id: s.text for s in store.get_session(outcome.session_id).context}
+    assert saved["s4"] == "A fixed fee of EUR 90,000."
+
+
 from app.question import Branch  # noqa: E402
 
 
