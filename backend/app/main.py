@@ -6,16 +6,18 @@ is enabled for the dev front end.
 
 from typing import Literal
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAIError
 from pydantic import BaseModel, field_validator
 
 from . import orchestrator, store
 from .conflicts import Note
+from .export import build_docx
 from .llm import ModelRefusal
 from .parsing import Section, UnparseableDocument, parse_docx
 from .question import Branch, Option
+from .rewrite import overlay_texts
 
 app = FastAPI(title="Section-aware rewrite agent")
 
@@ -189,3 +191,39 @@ async def answer(session_id: str, request: AnswerRequest) -> RewriteResponse:
         ) from exc
 
     return _to_response(outcome)
+
+
+class SectionText(BaseModel):
+    id: str
+    text: str
+
+
+class ExportRequest(BaseModel):
+    sections: list[SectionText]
+
+
+@app.post("/documents/{document_id}/export")
+async def export_document(document_id: str, request: ExportRequest) -> Response:
+    """Build the current, edited version of the document into a real .docx
+    file, and send it back.
+
+    The order and the headings always come from the document we already have
+    saved — never from the request. Only the text comes from the request. If
+    the request is missing text for a section, we just use that section's
+    original text instead of leaving it blank. If the request includes an id
+    we don't recognize, we just ignore it.
+    """
+    document = store.get_document(document_id)
+    if document is None:
+        raise HTTPException(
+            status_code=404, detail="No document with that id — upload it again."
+        )
+
+    submitted = {s.id: s.text for s in request.sections}
+    sections = overlay_texts(document.sections, submitted)
+
+    return Response(
+        content=build_docx(sections),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="rewritten-document.docx"'},
+    )

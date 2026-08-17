@@ -316,3 +316,58 @@ def test_a_model_failure_on_a_redraft_is_a_502(asked, monkeypatch):
 
     assert response.status_code == 502
     assert "model" in response.json()["detail"].lower()
+
+
+# --- downloading the finished document -------------------------------------
+
+
+def export(document_id: str, sections: list[dict]):
+    return client.post(f"/documents/{document_id}/export", json={"sections": sections})
+
+
+def test_export_includes_the_text_you_sent(document_id):
+    from app.parsing import parse_docx
+
+    response = export(document_id, [{"id": "s2", "text": "A new, concrete scope."}])
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    reread = parse_docx(response.content)
+    scope = next(s for s in reread.sections if s.heading == "2. Scope of Work")
+    assert scope.text == "A new, concrete scope."
+
+
+def test_export_keeps_the_original_text_for_a_section_you_did_not_send(document_id):
+    from app.parsing import parse_docx
+
+    response = export(document_id, [{"id": "s2", "text": "A new, concrete scope."}])
+
+    reread = parse_docx(response.content)
+    fees = next(s for s in reread.sections if s.heading == "3. Fees")
+    assert fees.text == PROPOSAL[5][1]
+
+
+def test_export_ignores_a_section_id_that_does_not_exist(document_id):
+    response = export(document_id, [{"id": "s99", "text": "orphaned"}])
+
+    assert response.status_code == 200
+
+
+def test_export_keeps_the_original_section_order(document_id):
+    from app.parsing import parse_docx
+
+    response = export(document_id, [])
+
+    reread = parse_docx(response.content)
+    assert [s.heading for s in reread.sections] == [
+        "1. Executive Summary", "2. Scope of Work", "3. Fees",
+    ]
+
+
+def test_export_returns_a_clear_error_for_an_unknown_document():
+    response = export("nope", [])
+
+    assert response.status_code == 404
+    assert "document" in response.json()["detail"].lower()
