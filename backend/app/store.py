@@ -12,46 +12,35 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from .conflicts import Conflict, Note
 from .parsing import ParsedDocument
-from .policy import FindingGroup, Ripple
 
 _DOCUMENTS: dict[str, ParsedDocument] = {}
 _SESSIONS: dict[str, "RewriteSession"] = {}
 
 
 class RewriteSession(BaseModel):
-    """A rewrite that stopped to ask something, and everything needed to finish.
+    """A rewrite that stopped to ask one question, and everything needed to
+    finish it.
 
-    `draft_text` is kept so the answer resumes from a rewrite that already
-    exists rather than re-running the draft blind, and `groups` is kept because
-    the answer only means anything against the question it was asked.
+    `draft_text` lets the answer resume from the rewrite that already exists
+    rather than re-running DRAFT blind. `asking` is the group the pending
+    question is about. `notes` are consequences already decided not to ask
+    about — kept here so `resume()`'s branches that don't call the model again
+    can still return them with the final result.
 
-    Invariant: `groups[0]` is the group currently being asked about. The rest are
-    what a second round would draw from.
-
-    `asked_section_ids` is what stops the same question being asked twice — a
-    second draft can fail to honour its constraint and hand back the identical
-    finding, and re-asking would tell the author the tool was not listening.
-    `completed` makes a finished session terminal, so a stale tab answering twice
-    gets a clear 409 rather than silently re-running the loop.
-
-    `ripples` and `flagged` are kept apart because they mean different things.
-    `ripples` is what an audit found, and a redraft replaces it — those findings
-    describe text that no longer exists. `flagged` is what the author asked to
-    have flagged, which is an instruction rather than a detection, and no later
-    redraft may throw it away.
+    `resolved` makes a finished session terminal: a stale tab answering twice
+    gets a 409, not a second run of the loop. There is no round counter and no
+    per-section suppression list, because there is only ever one round.
     """
 
     document_id: str
     section_id: str
     instruction: str
     draft_text: str
-    groups: list[FindingGroup]
-    ripples: list[Ripple]
-    flagged: list[Ripple] = []
-    answers: list[str] = []
-    asked_section_ids: list[str] = []
-    completed: bool = False
+    asking: list[Conflict]
+    notes: list[Note]
+    resolved: bool = False
 
 
 def save_document(parsed: ParsedDocument) -> str:
