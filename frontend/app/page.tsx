@@ -6,6 +6,7 @@ import { SectionList } from "./components/SectionList";
 import { InstructionPanel } from "./components/InstructionPanel";
 import { ResultPanel } from "./components/ResultPanel";
 import { QuestionPanel } from "./components/QuestionPanel";
+import { ExportPanel } from "./components/ExportPanel";
 import {
   answerQuestion,
   rewriteSection,
@@ -17,6 +18,7 @@ export default function Home() {
   const [document, setDocument] = useState<UploadResponse | null>(null);
   const [filename, setFilename] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [currentTexts, setCurrentTexts] = useState<Record<string, string>>({});
 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<RewriteResult | null>(null);
@@ -44,6 +46,7 @@ export default function Home() {
         documentId: document.document_id,
         sectionId: selectedId,
         instruction,
+        currentTexts,
       }),
     );
   }
@@ -53,6 +56,20 @@ export default function Home() {
   async function handleAnswer(sessionId: string, optionKey: string) {
     await run(() => answerQuestion({ sessionId, optionKey }));
   }
+
+  // Clicking Accept is the only thing that keeps a rewrite. Re-running a
+  // rewrite you don't like, without clicking Accept, never overwrites
+  // something you already kept.
+  function handleAccept() {
+    if (result?.status !== "complete") return;
+    setCurrentTexts((prev) => ({ ...prev, [result.section_id]: result.new_text }));
+  }
+
+  const editedIds = new Set(
+    (document?.sections ?? [])
+      .filter((s) => currentTexts[s.id] !== s.text)
+      .map((s) => s.id),
+  );
 
   return (
     <main className="mx-auto max-w-6xl space-y-6 p-8">
@@ -75,6 +92,9 @@ export default function Home() {
               setSelectedId(null);
               setResult(null);
               setError(null);
+              setCurrentTexts(
+                Object.fromEntries(uploaded.sections.map((s) => [s.id, s.text])),
+              );
             }}
           />
 
@@ -88,11 +108,18 @@ export default function Home() {
                 sections={document.sections}
                 headingsDetected={document.headings_detected}
                 selectedId={selectedId}
+                editedIds={editedIds}
                 onSelect={(id) => {
                   setSelectedId(id);
                   setResult(null);
                   setError(null);
                 }}
+              />
+
+              <ExportPanel
+                documentId={document.document_id}
+                filename={filename ?? "document.docx"}
+                currentTexts={currentTexts}
               />
             </>
           )}
@@ -134,7 +161,13 @@ export default function Home() {
             </div>
           )}
 
-          {result?.status === "complete" && <ResultPanel result={result} />}
+          {result?.status === "complete" && (
+            <ResultPanel
+              result={result}
+              onAccept={handleAccept}
+              accepted={currentTexts[result.section_id] === result.new_text}
+            />
+          )}
         </div>
       </div>
     </main>
