@@ -51,13 +51,20 @@ def parse_docx(data: bytes) -> ParsedDocument:
         else _split_on_blank_lines(paragraphs)
     )
 
-    return ParsedDocument(
-        sections=[
-            Section(id=f"s{n}", heading=heading, text=text)
-            for n, (heading, text) in enumerate(pairs, start=1)
-        ],
-        headings_detected=headings_detected,
-    )
+    sections: list[Section] = []
+    n = 1
+    for heading, text in pairs:
+        if heading == PREAMBLE_HEADING:
+            # A fixed id, outside the numbering sequence — so it never shifts
+            # what a real section's number means. Only ever produced by the
+            # heading-styled path; the blank-line fallback has no preamble
+            # concept, since each block's own first line is its heading.
+            sections.append(Section(id="preamble", heading=heading, text=text))
+        else:
+            sections.append(Section(id=f"s{n}", heading=heading, text=text))
+            n += 1
+
+    return ParsedDocument(sections=sections, headings_detected=headings_detected)
 
 
 def _split_on_headings(paragraphs: list[tuple[str, str]]) -> list[tuple[str, str]]:
