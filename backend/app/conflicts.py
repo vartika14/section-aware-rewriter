@@ -107,3 +107,76 @@ def find_conflicts(
 
     result = structured_completion(system=SYSTEM, user=user, schema=schema, temperature=0)
     return [Conflict(**f.model_dump()) for f in result.findings]
+
+
+def ground(
+    conflicts: list[Conflict], sections_by_id: dict[str, Section], rewritten_id: str
+) -> list[Conflict]:
+    """Keep only conflicts whose quote is real, in a section other than the one
+    being rewritten.
+
+    Excluding the rewritten section here is what replaces the old design's
+    separate self-reference guard: since there is no second "resolution" quote
+    left to fail closed on, keeping the section-under-edit out of the candidate
+    pool in the first place removes the whole failure mode rather than patching
+    it after the fact.
+    """
+    grounded = []
+    for c in conflicts:
+        if c.section_id == rewritten_id:
+            continue
+        section = sections_by_id.get(c.section_id)
+        if section is None:
+            continue
+        if normalize(c.quote) in normalize(section.text):
+            grounded.append(c)
+    return grounded
+
+
+def to_notes(
+    conflicts: list[Conflict], grounded: list[Conflict], sections_by_id: dict[str, Section]
+) -> list[Note]:
+    grounded_set = {(c.section_id, c.quote) for c in grounded}
+    return [
+        Note(
+            section_id=c.section_id,
+            heading=sections_by_id[c.section_id].heading
+            if c.section_id in sections_by_id else c.section_id,
+            quote=c.quote,
+            explanation=c.explanation,
+            verified=(c.section_id, c.quote) in grounded_set,
+        )
+        for c in conflicts
+    ]
+
+
+class Decision(BaseModel):
+    """The whole interrupt policy's output: ask about one thing, or complete."""
+
+    action: Literal["ask", "complete"]
+    asking: list[Conflict] = []
+    notes: list[Note] = []
+
+
+def decide(conflicts: list[Conflict], sections: list[Section], rewritten_id: str) -> Decision:
+    """Ungrounded conflicts never block — a possibly hallucinated conflict must
+    not interrupt anyone, the same asymmetry the old design measured and kept.
+
+    Only the FIRST blocking section is ever asked about. Everything else this
+    round — a different blocking section, or a non-blocking finding — becomes a
+    note instead. This is the entire reason "at most one question, ever" needs
+    no counter: there is only ever one group to ask about, by construction.
+    """
+    by_id = {s.id: s for s in sections}
+    grounded = ground(conflicts, by_id, rewritten_id)
+    blocking = [c for c in grounded if c.blocking]
+
+    if not blocking:
+        return Decision(action="complete", notes=to_notes(conflicts, grounded, by_id))
+
+    primary_section = blocking[0].section_id
+    primary = [c for c in blocking if c.section_id == primary_section]
+    deferred = [c for c in conflicts if c not in primary]
+    return Decision(
+        action="ask", asking=primary, notes=to_notes(deferred, grounded, by_id)
+    )

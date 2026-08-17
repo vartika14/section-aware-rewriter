@@ -97,3 +97,107 @@ def test_the_section_id_field_is_constrained_to_real_ids():
 
     with pytest.raises(ValidationError):
         schema(findings=[{"section_id": "s99", "quote": "x", "explanation": "x", "blocking": True}])
+
+
+# --- ground(): is the conflict real, and is it actually another section? ---
+
+from app.conflicts import Decision, decide, ground, to_notes  # noqa: E402
+
+BY_ID = {s.id: s for s in SECTIONS}
+
+
+def conflict(**overrides) -> Conflict:
+    """A real, blocking conflict against s3 — the shape that should ask."""
+    return Conflict(
+        **{
+            "section_id": "s3",
+            "quote": "A fixed fee of EUR 48,000",
+            "explanation": "Priced against the old scope.",
+            "blocking": True,
+            **overrides,
+        }
+    )
+
+
+def test_a_quote_lifted_from_the_section_is_grounded():
+    assert ground([conflict()], BY_ID, rewritten_id="s2") == [conflict()]
+
+
+def test_a_quote_that_appears_nowhere_is_dropped():
+    assert ground([conflict(quote="a fixed fee of EUR 90,000")], BY_ID, rewritten_id="s2") == []
+
+
+def test_whitespace_and_case_do_not_defeat_grounding():
+    assert ground(
+        [conflict(quote="a  FIXED   fee\nof EUR 48,000")], BY_ID, rewritten_id="s2"
+    ) == [conflict(quote="a  FIXED   fee\nof EUR 48,000")]
+
+
+def test_a_conflict_naming_an_unknown_section_is_dropped():
+    assert ground([conflict(section_id="s99")], BY_ID, rewritten_id="s2") == []
+
+
+def test_a_conflict_against_the_rewritten_section_itself_is_dropped():
+    """A section cannot conflict with itself — that is just the rewrite. This is
+    the direct fix for the old self-reference hole: it cannot be reached here,
+    because there is no separate 'resolution' citation left to ground."""
+    assert ground([conflict(section_id="s2")], BY_ID, rewritten_id="s2") == []
+
+
+# --- decide(): the whole interrupt policy -----------------------------------
+
+
+def test_no_conflicts_completes_silently():
+    """The true negative. Precision matters as much as recall."""
+    decision = decide([], SECTIONS, rewritten_id="s2")
+    assert decision.action == "complete"
+    assert decision.notes == []
+
+
+def test_a_non_blocking_conflict_completes_as_a_note():
+    decision = decide([conflict(blocking=False)], SECTIONS, rewritten_id="s2")
+    assert decision.action == "complete"
+    assert [n.section_id for n in decision.notes] == ["s3"]
+
+
+def test_an_unverified_conflict_never_blocks_but_is_still_reported():
+    """A possibly hallucinated conflict must not interrupt anyone — but hiding
+    it silently is the class of bug this tool exists to prevent."""
+    decision = decide([conflict(quote="not in the document")], SECTIONS, rewritten_id="s2")
+    assert decision.action == "complete"
+    assert decision.notes[0].verified is False
+
+
+def test_a_blocking_grounded_conflict_asks():
+    decision = decide([conflict()], SECTIONS, rewritten_id="s2")
+    assert decision.action == "ask"
+    assert [c.section_id for c in decision.asking] == ["s3"]
+
+
+def test_conflicts_against_the_same_section_are_all_asked_about_together():
+    decision = decide(
+        [conflict(), conflict(quote="covers the scope in section 2", explanation="also fee-related")],
+        SECTIONS, rewritten_id="s2",
+    )
+    assert decision.action == "ask"
+    assert len(decision.asking) == 2
+
+
+def test_only_the_first_blocking_section_is_asked_about_the_rest_become_notes():
+    """Two blocking conflicts, two different sections: one question, ever — the
+    other becomes a note rather than a second interrupt."""
+    decision = decide(
+        [
+            conflict(section_id="s3"),
+            conflict(section_id="s1", quote="A recommendation within the quarter"),
+        ],
+        SECTIONS, rewritten_id="s2",
+    )
+    assert decision.action == "ask"
+    assert {c.section_id for c in decision.asking} == {"s3"}
+    assert "s1" in [n.section_id for n in decision.notes]
+
+
+def test_a_conflict_against_the_rewritten_section_never_blocks():
+    decision = decide([conflict(section_id="s2")], SECTIONS, rewritten_id="s2")
+    assert decision.action == "complete"
