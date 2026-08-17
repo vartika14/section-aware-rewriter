@@ -25,11 +25,30 @@ function NoteCard({ note }: { note: Note }) {
   );
 }
 
-export function ResultPanel({ result }: { result: RewriteComplete }) {
+export function ResultPanel({
+  result,
+  onAccept,
+  accepted,
+}: {
+  result: RewriteComplete;
+  onAccept: () => void;
+  accepted: boolean;
+}) {
   return (
     <div className="space-y-6 rounded-lg border border-slate-300 bg-white p-6">
       <div>
-        <h2 className="mb-4 font-semibold">4. Result</h2>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="font-semibold">4. Result</h2>
+          <button
+            type="button"
+            onClick={onAccept}
+            disabled={accepted}
+            className="rounded-md bg-emerald-700 px-3 py-1.5 text-sm font-medium
+                       text-white hover:bg-emerald-800 disabled:bg-slate-300"
+          >
+            {accepted ? "Accepted" : "Accept into final document"}
+          </button>
+        </div>
         <div className="grid gap-4 md:grid-cols-2">
           <section>
             <h3 className="mb-2 text-xs font-semibold tracking-wide text-slate-500 uppercase">
