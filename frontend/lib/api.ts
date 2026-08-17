@@ -30,13 +30,11 @@ async function unwrap<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export type Ripple = {
+export type Note = {
   section_id: string;
   heading: string;
   quote: string;
-  kind: string;
   explanation: string;
-  proposed_fix: string | null;
   /** False when the quoted clause could not be found where the model said it
    *  was — a possibly invented conflict, shown but never asked about. */
   verified: boolean;
@@ -45,17 +43,17 @@ export type Ripple = {
 export type Option = { key: string; label: string };
 
 /**
- * `status` is the discriminator. All three arms come from both `/rewrite` and
- * `/rewrite/{id}/answer`, so a second question renders exactly like the first.
+ * `status` is the discriminator. All three arms come from `/rewrite`; only
+ * `complete` and `declined` come from `/rewrite/{id}/answer` — the backend's
+ * resume() cannot return a second question, and answerQuestion() below says so
+ * in its own return type.
  */
 export type RewriteComplete = {
   status: "complete";
   section_id: string;
   old_text: string;
   new_text: string;
-  ripples: Ripple[];
-  /** What the agent decided once it had spent its two questions. */
-  assumptions: string[];
+  notes: Note[];
 };
 
 export type RewriteNeedsClarification = {
@@ -95,11 +93,13 @@ export async function rewriteSection(input: {
   );
 }
 
+/** resume() on the backend cannot ask a second question — its return type has
+ *  no Asking arm. This return type says the same thing on the client. */
 export async function answerQuestion(input: {
   sessionId: string;
   optionKey: string;
-}): Promise<RewriteResult> {
-  return unwrap<RewriteResult>(
+}): Promise<RewriteComplete | RewriteDeclined> {
+  return unwrap<RewriteComplete | RewriteDeclined>(
     await fetch(`${API_BASE}/rewrite/${input.sessionId}/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
