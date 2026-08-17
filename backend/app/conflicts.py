@@ -34,6 +34,11 @@ For every conflict:
   cross-reference alone is not a resolution, it is the reason the conflict
   exists. `blocking` is false when the inconsistency is cosmetic: nothing is
   owed differently, a reader would just see slightly stale wording.
+- A section that commits to something "for", "assuming", or "as defined in"
+  another section is committing against that section's specific wording, not
+  just its general subject. If the wording changes at all — even by adding
+  detail that seems consistent with it — treat the commitment as blocking
+  unless you are certain nothing about what is covered or owed has changed.
 
 When in doubt, true. A needless question costs a moment; a wrong silent answer
 costs the author something real, in whatever this document governs.
