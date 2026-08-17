@@ -11,10 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAIError
 from pydantic import BaseModel, field_validator
 
-from . import loop, store
+from . import orchestrator, store
+from .conflicts import Note
 from .llm import ModelRefusal
 from .parsing import Section, UnparseableDocument, parse_docx
-from .policy import Ripple
 from .question import Branch, Option
 
 app = FastAPI(title="Section-aware rewrite agent")
@@ -79,17 +79,15 @@ class AnswerRequest(BaseModel):
 
 
 class RewriteComplete(BaseModel):
-    """The rewrite stands. `ripples` are the consequences the policy judged not
-    worth interrupting for — shown so the consultant can act on them by hand.
-    `assumptions` are what the agent decided once it had spent its two questions,
-    stated rather than buried."""
+    """The rewrite stands. `notes` are consequences the policy judged not worth
+    interrupting for — shown so the author can act on them by hand. Never
+    applied outside the selected section."""
 
     status: Literal["complete"] = "complete"
     section_id: str
     old_text: str
     new_text: str
-    ripples: list[Ripple] = []
-    assumptions: list[str] = []
+    notes: list[Note] = []
 
 
 class RewriteNeedsClarification(BaseModel):
@@ -117,11 +115,11 @@ class RewriteDeclined(BaseModel):
 RewriteResponse = RewriteComplete | RewriteNeedsClarification | RewriteDeclined
 
 
-def _to_response(outcome: loop.Outcome) -> RewriteResponse:
+def _to_response(outcome: orchestrator.Outcome) -> RewriteResponse:
     """One mapper, so both endpoints answer in the same shapes."""
-    if isinstance(outcome, loop.Declined):
+    if isinstance(outcome, orchestrator.Declined):
         return RewriteDeclined(section_id=outcome.section_id, reason=outcome.reason)
-    if isinstance(outcome, loop.Asking):
+    if isinstance(outcome, orchestrator.Asking):
         return RewriteNeedsClarification(
             session_id=outcome.session_id,
             section_id=outcome.section_id,
@@ -132,24 +130,23 @@ def _to_response(outcome: loop.Outcome) -> RewriteResponse:
         section_id=outcome.section_id,
         old_text=outcome.old_text,
         new_text=outcome.new_text,
-        ripples=outcome.ripples,
-        assumptions=outcome.assumptions,
+        notes=outcome.notes,
     )
 
 
 @app.post("/rewrite", response_model=RewriteResponse)
 async def rewrite(request: RewriteRequest) -> RewriteResponse:
     try:
-        outcome = loop.start(
+        outcome = orchestrator.start(
             request.document_id,
             section_id=request.section_id,
             instruction=request.instruction,
         )
-    except loop.UnknownDocument as exc:
+    except orchestrator.UnknownDocument as exc:
         raise HTTPException(
             status_code=404, detail="No document with that id — upload it again."
         ) from exc
-    except loop.UnknownSection as exc:
+    except orchestrator.UnknownSection as exc:
         raise HTTPException(
             status_code=404, detail="No section with that id in this document."
         ) from exc
@@ -166,22 +163,23 @@ async def rewrite(request: RewriteRequest) -> RewriteResponse:
 @app.post("/rewrite/{session_id}/answer", response_model=RewriteResponse)
 async def answer(session_id: str, request: AnswerRequest) -> RewriteResponse:
     """Resume a suspended rewrite. Same three shapes as `/rewrite`, so the front
-    end renders a second question exactly as it rendered the first."""
+    end renders a second question exactly as it rendered the first — though
+    resume() can in fact only ever return complete or declined."""
     try:
-        outcome = loop.resume(session_id, option_key=request.option_key)
-    except loop.UnknownSession as exc:
+        outcome = orchestrator.resume(session_id, option_key=request.option_key)
+    except orchestrator.UnknownSession as exc:
         raise HTTPException(
             status_code=404,
             detail="No rewrite session with that id — start the rewrite again.",
         ) from exc
-    except loop.UnknownDocument as exc:
+    except orchestrator.UnknownDocument as exc:
         # The session outlived its document, which an in-memory store makes
         # possible across a restart. Say which thing is missing.
         raise HTTPException(
             status_code=404,
             detail="The document for this rewrite is gone — upload it again.",
         ) from exc
-    except loop.SessionFinished as exc:
+    except orchestrator.SessionFinished as exc:
         raise HTTPException(
             status_code=409, detail="This rewrite has already finished."
         ) from exc

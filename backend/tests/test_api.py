@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import store
-from app.audit import AuditResult, Finding
+from app.conflicts import Conflict
 from app.llm import ModelRefusal
 from app.main import app
 from tests.test_parsing import make_docx
@@ -79,68 +79,54 @@ NEW_TEXT = "Concrete deliverables: a current-state map."
 
 @pytest.fixture
 def fake_model(monkeypatch):
-    """Substitute every seam the pipeline calls, and hand the test the audit.
-
-    The rewrite is three model calls now — draft, audit, and the phrasing of any
-    question. Mutate `audit["result"]` to script what the audit finds; the
-    default is a clean bill of health.
-
-    The phrasing call is made to fail on purpose so these tests assert on the
-    deterministic question. What the endpoint returns is this file's business;
-    how the sentence reads is `test_question.py`'s.
-    """
-    audit = {"result": AuditResult(instruction_applicable=True, findings=[])}
+    """Substitute DRAFT and DETECT. Mutate `state["conflicts"]` to script what
+    DETECT finds; default is a clean bill of health. The phrasing call fails on
+    purpose — wording is test_question.py's business, not this file's."""
+    state = {"conflicts": []}
 
     monkeypatch.setattr(
-        "app.agent.structured_completion",
-        lambda **kwargs: kwargs["schema"](new_text=NEW_TEXT),
+        "app.rewrite.structured_completion",
+        lambda **kw: kw["schema"](applicable=True, new_text=NEW_TEXT),
     )
-    monkeypatch.setattr("app.audit.structured_completion", lambda **kw: audit["result"])
+    monkeypatch.setattr(
+        "app.conflicts.structured_completion",
+        lambda **kw: kw["schema"](findings=[c.model_dump() for c in state["conflicts"]]),
+    )
     monkeypatch.setattr(
         "app.question.structured_completion",
         lambda **kw: (_ for _ in ()).throw(RuntimeError("phrasing offline")),
     )
-    return audit
+    return state
 
 
-def blocking_finding(**overrides) -> Finding:
-    """Verified, unresolvable — the fee's premise no longer holds."""
-    return Finding(
+def blocking_conflict(**overrides) -> Conflict:
+    return Conflict(
         **{
-            "section_id": "s3",
-            "quote": "A fixed fee of EUR 48,000",
-            "kind": "invalidated_premise",
+            "section_id": "s3", "quote": "A fixed fee of EUR 48,000",
             "explanation": "The fee was priced against the old, vaguer scope.",
-            "resolvable_from_document": False,
-            **overrides,
+            "blocking": True, **overrides,
         }
     )
 
 
-def test_rewrite_returns_the_new_text_alongside_the_old(document_id, fake_model):
-    response = client.post(
-        "/rewrite",
-        json={
-            "document_id": document_id,
-            "section_id": "s2",
-            "instruction": "Make this concrete. Name the deliverables.",
-        },
-    )
+def rewrite(document_id: str, section_id: str = "s2", instruction: str = "Be concrete."):
+    return client.post("/rewrite", json={
+        "document_id": document_id, "section_id": section_id, "instruction": instruction,
+    })
 
+
+def test_rewrite_returns_the_new_text_alongside_the_old(document_id, fake_model):
+    response = rewrite(document_id, instruction="Make this concrete. Name the deliverables.")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "complete"
-    assert body["new_text"] == "Concrete deliverables: a current-state map."
+    assert body["new_text"] == NEW_TEXT
     assert body["old_text"] == PROPOSAL[3][1]
     assert body["section_id"] == "s2"
 
 
 def test_rewrite_404s_on_an_unknown_document(fake_model):
-    response = client.post(
-        "/rewrite",
-        json={"document_id": "nope", "section_id": "s1", "instruction": "Be concrete."},
-    )
-
+    response = rewrite("nope", section_id="s1")
     assert response.status_code == 404
     # Asserted on the message too: a missing *route* also 404s, so the status
     # code alone would pass before the endpoint existed.
@@ -148,15 +134,7 @@ def test_rewrite_404s_on_an_unknown_document(fake_model):
 
 
 def test_rewrite_404s_on_an_unknown_section(document_id, fake_model):
-    response = client.post(
-        "/rewrite",
-        json={
-            "document_id": document_id,
-            "section_id": "s99",
-            "instruction": "Be concrete.",
-        },
-    )
-
+    response = rewrite(document_id, section_id="s99")
     assert response.status_code == 404
     assert "section" in response.json()["detail"].lower()
 
@@ -168,16 +146,9 @@ def test_rewrite_surfaces_a_model_failure_rather_than_a_500(document_id, monkeyp
     def refuse(*, system, user, schema, **kwargs):
         raise ModelRefusal("content filter triggered")
 
-    monkeypatch.setattr("app.agent.structured_completion", refuse)
+    monkeypatch.setattr("app.rewrite.structured_completion", refuse)
 
-    response = client.post(
-        "/rewrite",
-        json={
-            "document_id": document_id,
-            "section_id": "s2",
-            "instruction": "Be concrete.",
-        },
-    )
+    response = rewrite(document_id)
 
     assert response.status_code == 502
     assert "model" in response.json()["detail"].lower()
@@ -195,28 +166,14 @@ def test_rewrite_rejects_a_blank_instruction(document_id, fake_model):
 # --- the clarification loop ----------------------------------------------
 
 
-def rewrite(document_id: str, section_id: str = "s2", instruction: str = "Be concrete."):
-    return client.post(
-        "/rewrite",
-        json={
-            "document_id": document_id,
-            "section_id": section_id,
-            "instruction": instruction,
-        },
-    )
-
-
-def test_a_clean_rewrite_completes_with_no_ripples(document_id, fake_model):
+def test_a_clean_rewrite_completes_with_no_notes(document_id, fake_model):
     body = rewrite(document_id).json()
-
     assert body["status"] == "complete"
-    assert body["ripples"] == []
+    assert body["notes"] == []
 
 
 def test_a_blocking_finding_suspends_and_asks(document_id, fake_model):
-    fake_model["result"] = AuditResult(
-        instruction_applicable=True, findings=[blocking_finding()]
-    )
+    fake_model["conflicts"] = [blocking_conflict()]
 
     body = rewrite(document_id).json()
 
@@ -229,9 +186,7 @@ def test_a_blocking_finding_suspends_and_asks(document_id, fake_model):
 def test_the_suspended_run_is_kept_so_it_can_be_resumed(document_id, fake_model):
     """The session is the whole point of suspending. Without it the answer has
     nothing to resume into."""
-    fake_model["result"] = AuditResult(
-        instruction_applicable=True, findings=[blocking_finding()]
-    )
+    fake_model["conflicts"] = [blocking_conflict()]
 
     session_id = rewrite(document_id, instruction="Name the deliverables.").json()[
         "session_id"
@@ -241,48 +196,43 @@ def test_the_suspended_run_is_kept_so_it_can_be_resumed(document_id, fake_model)
     assert session is not None
     assert session.instruction == "Name the deliverables."
     assert session.draft_text == NEW_TEXT
-    assert session.groups[0].section_id == "s3"
+    assert session.asking[0].section_id == "s3"
 
 
 def test_a_non_blocking_finding_completes_but_is_reported(document_id, fake_model):
     """The consultant is told the summary drifted; they are not asked about it."""
-    fake_model["result"] = AuditResult(
-        instruction_applicable=True,
-        findings=[
-            blocking_finding(
-                section_id="s1",
-                quote="act on this quarter",
-                kind="stale_reference",
-                explanation="The summary still describes the older, vaguer scope.",
-            )
-        ],
-    )
+    fake_model["conflicts"] = [
+        blocking_conflict(
+            section_id="s1", quote="act on this quarter", blocking=False,
+            explanation="The summary still describes the older, vaguer scope.",
+        )
+    ]
 
     body = rewrite(document_id).json()
 
     assert body["status"] == "complete"
-    assert body["ripples"][0]["heading"] == "1. Executive Summary"
-    assert body["ripples"][0]["verified"] is True
+    assert body["notes"][0]["heading"] == "1. Executive Summary"
+    assert body["notes"][0]["verified"] is True
 
 
 def test_an_ungrounded_finding_never_becomes_a_question(document_id, fake_model):
     """The model claims a conflict whose quote is nowhere in the document.
     Reported, flagged, but not worth interrupting anyone over."""
-    fake_model["result"] = AuditResult(
-        instruction_applicable=True,
-        findings=[blocking_finding(quote="a fixed fee of EUR 90,000")],
-    )
+    fake_model["conflicts"] = [blocking_conflict(quote="a fixed fee of EUR 90,000")]
 
     body = rewrite(document_id).json()
 
     assert body["status"] == "complete"
-    assert body["ripples"][0]["verified"] is False
+    assert body["notes"][0]["verified"] is False
 
 
-def test_an_instruction_that_makes_no_sense_is_declined(document_id, fake_model):
-    fake_model["result"] = AuditResult(
-        instruction_applicable=False,
-        inapplicable_reason="That section sets no deadline to bring forward.",
+def test_an_instruction_that_makes_no_sense_is_declined(document_id, monkeypatch):
+    monkeypatch.setattr(
+        "app.rewrite.structured_completion",
+        lambda **kw: kw["schema"](
+            applicable=False,
+            inapplicable_reason="That section sets no deadline to bring forward.",
+        ),
     )
 
     body = rewrite(document_id, instruction="Bring the deadline forward.").json()
@@ -295,17 +245,12 @@ def test_an_instruction_that_makes_no_sense_is_declined(document_id, fake_model)
 
 
 def answer(session_id: str, option_key: str = "c"):
-    return client.post(
-        f"/rewrite/{session_id}/answer", json={"option_key": option_key}
-    )
+    return client.post(f"/rewrite/{session_id}/answer", json={"option_key": option_key})
 
 
 @pytest.fixture
 def asked(document_id, fake_model):
-    """A suspended rewrite, ready to be answered."""
-    fake_model["result"] = AuditResult(
-        instruction_applicable=True, findings=[blocking_finding()]
-    )
+    fake_model["conflicts"] = [blocking_conflict()]
     body = rewrite(document_id).json()
     assert body["status"] == "needs_clarification"
     return body
@@ -313,40 +258,42 @@ def asked(document_id, fake_model):
 
 def test_answering_completes_the_rewrite(asked):
     response = answer(asked["session_id"], "c")
-
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "complete"
     assert body["new_text"] == NEW_TEXT
-    assert body["assumptions"] == []
 
 
-def test_flagging_returns_the_finding_as_a_ripple(asked):
+def test_answering_never_produces_a_second_question(asked, fake_model):
+    """resume()'s return type has no Asking arm — this exercises that at the
+    HTTP boundary, where a bug would otherwise be a silently-ignored field."""
+    fake_model["conflicts"] = [
+        blocking_conflict(section_id="s1", quote="act on this quarter")
+    ]
+    body = answer(asked["session_id"], "a").json()
+    assert body["status"] == "complete"
+
+
+def test_flagging_keeps_the_finding_as_a_note(asked):
     body = answer(asked["session_id"], "b").json()
-
-    assert [ripple["section_id"] for ripple in body["ripples"]] == ["s3"]
+    assert [n["section_id"] for n in body["notes"]] == ["s3"]
 
 
 def test_answering_an_unknown_session_404s(fake_model):
     response = answer("nope")
-
     assert response.status_code == 404
     assert "session" in response.json()["detail"].lower()
 
 
 def test_answering_twice_409s(asked):
     answer(asked["session_id"], "c")
-
     response = answer(asked["session_id"], "c")
-
     assert response.status_code == 409
     assert "finished" in response.json()["detail"].lower()
 
 
 def test_an_unrecognised_option_is_a_422(asked):
-    response = answer(asked["session_id"], "z")
-
-    assert response.status_code == 422
+    assert answer(asked["session_id"], "z").status_code == 422
 
 
 def test_a_lost_document_is_a_404_not_a_500(asked, monkeypatch):
@@ -363,7 +310,7 @@ def test_a_model_failure_on_a_redraft_is_a_502(asked, monkeypatch):
     def refuse(*, system, user, schema, **kwargs):
         raise ModelRefusal("content filter triggered")
 
-    monkeypatch.setattr("app.agent.structured_completion", refuse)
+    monkeypatch.setattr("app.rewrite.structured_completion", refuse)
 
     response = answer(asked["session_id"], "a")
 
