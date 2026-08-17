@@ -24,7 +24,12 @@ python3.12 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 ```
 
 Copy `backend/.env.example` to `backend/.env` and fill in either the Azure block
-or `OPENAI_API_KEY`. Then:
+or `OPENAI_API_KEY`. **API keys must be base64-encoded**, not pasted raw —
+encode with `python3 -c "import base64; print(base64.b64encode(b'YOUR_KEY').decode())"`.
+Not encryption, just kept out of plain text in a file you might `cat` or
+screen-share; decoded on load in `app/config.py`, and a key that fails to
+decode refuses to start rather than silently sending garbage to the model.
+Then:
 
 ```bash
 ./.venv/bin/python -m uvicorn app.main:app --port 8000 --reload

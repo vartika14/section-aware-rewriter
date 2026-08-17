@@ -4,10 +4,13 @@ Credentials live in `backend/.env`, which is gitignored. Copy `.env.example`
 and fill it in.
 """
 
+import base64
+import binascii
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -35,6 +38,28 @@ class Settings(BaseSettings):
     # Plain OpenAI — a fallback so the build isn't blocked waiting on the Azure key.
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-2024-08-06"
+
+    @field_validator("azure_openai_api_key", "openai_api_key", mode="before")
+    @classmethod
+    def _decode_base64_key(cls, value: str | None) -> str | None:
+        """Keys are stored base64-encoded in .env and decoded on load.
+
+        Not encryption — anyone with filesystem access decodes it in one line —
+        but it keeps the raw key from being readable at a glance in a `cat .env`
+        or over a shoulder, which is the actual threat model for a local
+        gitignored file. A key that fails to decode is a clear configuration
+        error, not a silent pass-through: better to fail at startup than to send
+        a garbled key to Azure and get a confusing auth error back.
+        """
+        if not value:
+            return value
+        try:
+            return base64.b64decode(value, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            raise ValueError(
+                "must be base64-encoded. Encode it with: "
+                "python3 -c \"import base64; print(base64.b64encode(b'YOUR_KEY').decode())\""
+            ) from exc
 
     @property
     def provider(self) -> Provider:
