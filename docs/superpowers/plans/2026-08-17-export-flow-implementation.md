@@ -2,83 +2,92 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let the author rewrite several sections in one session, accept the ones
-they want, and download a real `.docx` with those edits applied — while later
-rewrites correctly see earlier accepted edits, not the stale upload original.
+**Goal:** Let the user edit more than one section, keep the edits they like,
+and download a real Word file with those changes in it. Also: once they've
+accepted an edit to one section, a later edit to a *different* section should
+know about it — not check against the old, original text.
 
-**Architecture:** The frontend accumulates `{section_id: text}` as the author
-accepts rewrites and sends it with every `/rewrite` call. The backend overlays
-it onto the stored document before DRAFT/DETECT run, then freezes that overlaid
-view into the session the moment a question is asked, so answering it never
-sees a state that shifted underneath it. A new small module inverts parsing.py
-to turn sections back into a `.docx`; one new endpoint serves it.
+**How it works:** The browser keeps a running list — "here's the text I've
+accepted for each section so far." It sends that list along every time it asks
+for a new rewrite. The backend uses that list instead of the original upload
+when it checks for conflicts. If the app has to stop and ask the user a
+question, it takes a snapshot of the document at that exact moment, so the
+answer is never checked against a document that changed underneath it. A small
+new file turns sections back into a real Word document, and one new web
+address lets the browser download it.
 
-**Tech Stack:** Unchanged — Python 3.12, FastAPI, Pydantic v2, pytest,
-`python-docx` (already a dependency), Next.js, TypeScript, Tailwind.
+**Tech Stack:** Same as before — Python, FastAPI, Pydantic, pytest,
+`python-docx` (already used elsewhere in this project), Next.js, TypeScript,
+Tailwind.
 
 **Spec:** `docs/superpowers/specs/2026-08-17-export-flow-design.md` — this plan
-implements every numbered section of it.
+builds exactly what that document describes.
 
-## Global Constraints
+## Ground rules for this whole plan
 
-- **No new dependencies.** `python-docx` is already in `requirements.txt` and
-  already used both for parsing and for the sample-document scripts.
-- **`current_texts` is optional everywhere it's introduced**, defaulting to "no
-  override." Every test that exists before this plan starts must keep passing
-  unchanged — this is additive, not a redesign.
-- **Offline by default.** The model seam is substituted the same way it already
-  is throughout the suite; export itself makes no model call at all.
-- **No new frontend automated tests** — consistent with the standing project
-  decision (frontend verified by `tsc` and a manual click-through), stated once
-  in the simplified agent spec.
-- **Commit after every task.** End every commit message with:
+- **No new tools or libraries.** `python-docx` is already used for reading
+  Word files; we'll use it for writing them too.
+- **Every new feature is "off" unless you use it.** If a request doesn't
+  include the new "accepted edits" list, everything behaves exactly like it
+  does today. Nothing that already works should change.
+- **Tests still run without calling the real AI model.** Same as the rest of
+  this project — we fake the model's answers in tests so they run in seconds.
+- **No new automated tests on the frontend.** We check the frontend by
+  running the TypeScript checker and clicking through it by hand — that's
+  already how this project has been doing it.
+- **Commit after every task**, and end every commit message with:
   ```
   Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
   ```
 
 ---
 
-## File Structure
+## Files this plan touches
 
-**Created:**
+**New files:**
 
-| File | Responsibility |
+| File | What it's for |
 |---|---|
-| `backend/app/export.py` | `build_docx()` — sections back into `.docx` bytes. The inverse of `parsing.py`. |
-| `backend/tests/test_export.py` | Round-trip tests: build, re-parse, confirm nothing was lost. |
-| `frontend/app/components/ExportPanel.tsx` | The "Mark complete & download" control — its own busy/error state, separate from a rewrite's. |
+| `backend/app/export.py` | Turns a list of sections back into a real `.docx` file. |
+| `backend/tests/test_export.py` | Tests that check nothing gets lost when we build that file. |
+| `frontend/app/components/ExportPanel.tsx` | The "Mark complete & download" button and its own loading/error state. |
 
-**Modified:**
+**Files we're changing:**
 
-| File | Change |
+| File | What changes |
 |---|---|
-| `backend/app/rewrite.py` | `overlay_texts()` — the one function both the rewrite path and the export path share. |
-| `backend/app/store.py` | `RewriteSession` gains `context: list[Section]`. |
-| `backend/app/orchestrator.py` | `start()` takes `current_texts`; `resume()` reasons against `session.context`, not a fresh document fetch. |
-| `backend/app/main.py` | `RewriteRequest` gains `current_texts`; new `POST /documents/{id}/export`. |
-| `backend/tests/test_rewrite.py`, `test_orchestrator.py`, `test_api.py` | New tests per task below. |
-| `frontend/lib/api.ts` | `rewriteSection()` sends `currentTexts`; new `exportDocument()`. |
-| `frontend/app/components/ResultPanel.tsx` | "Accept into final document" button. |
-| `frontend/app/components/SectionList.tsx` | A marker for sections with an accepted edit. |
-| `frontend/app/page.tsx` | `currentTexts` state, accept handler, mounts `ExportPanel`. |
+| `backend/app/rewrite.py` | Add one small helper function both the rewrite and the download use. |
+| `backend/app/store.py` | Save a snapshot of the document alongside any question we ask the user. |
+| `backend/app/orchestrator.py` | Accept the "accepted edits so far" list; use the snapshot when answering a question. |
+| `backend/app/main.py` | Accept the new list in the rewrite request; add the new download endpoint. |
+| `backend/tests/test_rewrite.py`, `test_orchestrator.py`, `test_api.py` | New tests, one per change above. |
+| `frontend/lib/api.ts` | Send the accepted-edits list; add a function to download the file. |
+| `frontend/app/components/ResultPanel.tsx` | Add an "Accept into final document" button. |
+| `frontend/app/components/SectionList.tsx` | Show a small mark next to any section that's been edited. |
+| `frontend/app/page.tsx` | Keep track of accepted edits; wire everything together. |
 
 ---
 
-## Task 1: `overlay_texts()` in `rewrite.py`
+## Task 1: A function that fills in the edits you've already accepted
+
+**What this does:** Say you've already accepted a rewrite for section 2. This
+function takes the original list of sections and swaps in your accepted text
+for section 2, leaving everything else the same. Both the rewrite feature and
+the download feature will use this same function, so they never disagree
+about what "the current document" looks like.
 
 **Files:**
-- Modify: `backend/app/rewrite.py`
-- Modify: `backend/tests/test_rewrite.py`
+- Change: `backend/app/rewrite.py`
+- Change: `backend/tests/test_rewrite.py`
 
-**Interfaces:**
-- Produces: `def overlay_texts(sections: list[Section], current_texts: dict[str, str]) -> list[Section]`.
-  Task 2 (`orchestrator.start`) and Task 5 (the export endpoint) both call this —
-  it is the one place "apply accepted edits to a section list" is implemented.
+**What it produces:** a function called
+`overlay_texts(sections, current_texts)`. Later tasks call it from two
+places: when starting a new rewrite, and when building the file to download.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the tests first (they should fail right now)**
 
-Append to `backend/tests/test_rewrite.py` (its existing `SECTIONS` fixture —
-`s1`/`s2`/`s3` — is reused unchanged):
+Add this to `backend/tests/test_rewrite.py` (it reuses the `SECTIONS` list
+already at the top of that file):
 
 ```python
 from app.rewrite import overlay_texts  # add to the existing import line
@@ -109,32 +118,33 @@ def test_overlay_texts_with_an_empty_map_changes_nothing():
 
 
 def test_overlay_texts_ignores_an_id_that_matches_no_section():
-    """A stale id from a tab that hasn't refreshed since a new upload must not
-    raise — it just has nothing to attach to."""
+    """If the browser sends an old section id — say, from before a new file
+    was uploaded — this should just be ignored, not cause an error."""
     assert overlay_texts(SECTIONS, {"s99": "orphaned"}) == SECTIONS
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run the tests — confirm they fail**
 
 ```bash
 cd backend && ./.venv/bin/python -m pytest tests/test_rewrite.py -q
 ```
 
-Expected: `ImportError: cannot import name 'overlay_texts'`.
+You should see: `ImportError: cannot import name 'overlay_texts'` — that's
+expected, since we haven't written it yet.
 
-- [ ] **Step 3: Implement it**
+- [ ] **Step 3: Write the function**
 
-Append to `backend/app/rewrite.py`, after `find_section`:
+Add this to the end of `backend/app/rewrite.py`:
 
 ```python
 def overlay_texts(sections: list[Section], current_texts: dict[str, str]) -> list[Section]:
-    """Replace each section's text with the author's current accepted version,
-    where one exists. Ids, headings and order are untouched — only what the
-    rest of the pipeline reads as "the document" changes.
+    """Swap in the text the author has already accepted for a section, if
+    there is any. The id, heading, and position of each section never
+    change — only the text.
 
-    Shared by the rewrite path (orchestrator.start) and the export path (the
-    /documents/{id}/export endpoint) — one function, so "apply what the author
-    has accepted so far" means the same thing in both places.
+    Used in two places: when starting a new rewrite (so it can see edits
+    already accepted for other sections), and when building the file to
+    download (so the file matches what the author actually kept).
     """
     return [
         s.model_copy(update={"text": current_texts[s.id]}) if s.id in current_texts else s
@@ -142,26 +152,26 @@ def overlay_texts(sections: list[Section], current_texts: dict[str, str]) -> lis
     ]
 ```
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 4: Run the tests again — they should pass now**
 
 ```bash
 ./.venv/bin/python -m pytest tests/test_rewrite.py -q
 ```
 
-Expected: all pass.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Save this work**
 
 ```bash
 git add backend/app/rewrite.py backend/tests/test_rewrite.py
 git commit -m "$(cat <<'EOF'
-Add overlay_texts() — apply accepted edits to a section list
+Add overlay_texts() — fill in the edits the author already accepted
 
-One function, shared by the rewrite path and the export path: replace a
-section's text with the author's current accepted version where one exists,
-leave ids/headings/order untouched otherwise. An unknown id is ignored rather
-than raising — a stale tab sending a section id from before a new upload must
-not crash the request.
+One function that both the rewrite feature and the download feature will use:
+take the original sections, and swap in whatever text the author has already
+accepted, section by section. Everything else about the section — its id,
+heading, position — stays the same.
+
+If an id doesn't match any real section (for example, a leftover from before
+a new file was uploaded), it's just ignored instead of causing an error.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -170,27 +180,31 @@ EOF
 
 ---
 
-## Task 2: `store.py` + `orchestrator.start()` — the override reaches DRAFT/DETECT
+## Task 2: Make new rewrites see edits you've already accepted
+
+**What this does:** Right now, when you rewrite a section, the app only ever
+looks at the document as it was first uploaded. This task changes that: it
+looks at the document as it currently stands — including any edits you've
+already accepted for other sections.
 
 **Files:**
-- Modify: `backend/app/store.py`
-- Modify: `backend/app/orchestrator.py`
-- Modify: `backend/tests/test_orchestrator.py`
+- Change: `backend/app/store.py`
+- Change: `backend/app/orchestrator.py`
+- Change: `backend/tests/test_orchestrator.py`
 
-**Interfaces:**
-- Consumes: `overlay_texts` from Task 1.
-- Produces: `store.RewriteSession.context: list[Section]` (new field, required — every
-  session now carries the overlaid view it was created under).
-- Produces: `orchestrator.start(document_id, *, section_id, instruction, current_texts: dict[str, str] | None = None) -> Outcome`.
-  Task 3 (`resume`) reads `session.context`. Task 6 (`main.py`) passes
-  `current_texts` through from the request.
+**What it needs:** `overlay_texts` from Task 1.
 
-- [ ] **Step 1: Write the failing tests**
+**What it produces:**
+- A new field on the saved "waiting for an answer" record: `context`, a
+  snapshot of the document at the moment a question was asked.
+- The main "start a rewrite" function now optionally takes a
+  `current_texts` list of accepted edits.
 
-Insert into `backend/tests/test_orchestrator.py`, directly after
-`test_an_unknown_section_is_not_a_crash` and before the
-`from app.question import Branch` line (these are `start()`-only tests, so
-they belong with the others that only need `document_id`/`model`):
+- [ ] **Step 1: Write the tests first**
+
+Add these to `backend/tests/test_orchestrator.py`, right after the test
+called `test_an_unknown_section_is_not_a_crash` (before the line that starts
+`from app.question import Branch`):
 
 ```python
 def test_current_texts_reach_the_draft_prompt(document_id, model, monkeypatch):
@@ -211,7 +225,7 @@ def test_current_texts_reach_the_draft_prompt(document_id, model, monkeypatch):
     assert "A fixed fee of EUR 48,000 covers it." not in captured["user"]
 
 
-def test_current_texts_reach_the_detect_prompt(document_id, model, monkeypatch):
+def test_current_texts_reach_the_conflict_check_prompt(document_id, model, monkeypatch):
     captured = {}
 
     def detect(**kwargs):
@@ -228,13 +242,13 @@ def test_current_texts_reach_the_detect_prompt(document_id, model, monkeypatch):
     assert "A fixed fee of EUR 90,000, renegotiated." in captured["user"]
 
 
-def test_no_current_texts_behaves_exactly_as_before(document_id, model):
+def test_leaving_out_current_texts_still_works_as_before(document_id, model):
     outcome = orchestrator.start(document_id, section_id="s2", instruction="Be concrete.")
 
     assert isinstance(outcome, orchestrator.Completed)
 
 
-def test_the_suspended_session_stores_the_overlaid_context(document_id, model):
+def test_a_pending_question_saves_a_snapshot_of_the_edited_document(document_id, model):
     model["conflicts"] = [
         Conflict(section_id="s4", quote="A fixed fee of EUR 90,000.",
                  explanation="test", blocking=True)
@@ -246,48 +260,48 @@ def test_the_suspended_session_stores_the_overlaid_context(document_id, model):
     )
 
     assert isinstance(outcome, orchestrator.Asking)
-    stored = {s.id: s.text for s in store.get_session(outcome.session_id).context}
-    assert stored["s4"] == "A fixed fee of EUR 90,000."
+    saved = {s.id: s.text for s in store.get_session(outcome.session_id).context}
+    assert saved["s4"] == "A fixed fee of EUR 90,000."
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run the tests — confirm they fail**
 
 ```bash
 ./.venv/bin/python -m pytest tests/test_orchestrator.py -q
 ```
 
-Expected: `TypeError: start() got an unexpected keyword argument 'current_texts'`.
+Expected error: `TypeError: start() got an unexpected keyword argument 'current_texts'`.
 
-- [ ] **Step 3: Add the field to `RewriteSession`**
+- [ ] **Step 3: Add the snapshot field to the saved session**
 
-In `backend/app/store.py`, add `Section` to the existing import and the new
-field:
+In `backend/app/store.py`, add `Section` to the import line:
 
 ```python
 from .conflicts import Conflict, Note
 from .parsing import ParsedDocument, Section
 ```
 
+Then update the `RewriteSession` class to look like this:
+
 ```python
 class RewriteSession(BaseModel):
-    """A rewrite that stopped to ask one question, and everything needed to
-    finish it.
+    """A rewrite that's paused, waiting for the user to answer one question.
 
-    `context` is the overlaid sections view — the document as the author
-    currently had it, accepted edits included — at the moment the question was
-    asked. `resume()` reasons against this, never against a fresh re-overlay,
-    so an answer is always checked against exactly the document the question
-    was asked about.
+    `context` is a snapshot: the document exactly as it looked — including any
+    edits the author had already accepted — at the moment the question was
+    asked. When the answer comes back, we check it against this snapshot, not
+    against whatever the document looks like by then. That way the question
+    and the answer are always talking about the exact same document.
 
-    `draft_text` lets the answer resume from the rewrite that already exists
-    rather than re-running DRAFT blind. `asking` is the group the pending
-    question is about. `notes` are consequences already decided not to ask
-    about — kept here so `resume()`'s branches that don't call the model again
-    can still return them with the final result.
+    `draft_text` is the rewrite we already produced, so answering the question
+    doesn't mean starting over from nothing. `asking` is what the question is
+    about. `notes` are things we noticed but decided not to ask about — kept
+    here so we can still show them in the final result.
 
-    `resolved` makes a finished session terminal: a stale tab answering twice
-    gets a 409, not a second run of the loop. There is no round counter and no
-    per-section suppression list, because there is only ever one round.
+    `resolved` marks a session as finished, so answering it twice (say, from
+    an old browser tab) gives a clear error instead of quietly running again.
+    There's no "how many times have we asked" counter here, because the app
+    only ever asks once.
     """
 
     document_id: str
@@ -300,14 +314,16 @@ class RewriteSession(BaseModel):
     resolved: bool = False
 ```
 
-- [ ] **Step 4: Thread the override through `start()`**
+- [ ] **Step 4: Make `start()` accept and use the accepted-edits list**
 
-In `backend/app/orchestrator.py`, add `overlay_texts` to the existing import
-from `.rewrite`, then replace `start()`:
+In `backend/app/orchestrator.py`, add `overlay_texts` to the import from
+`.rewrite`:
 
 ```python
 from .rewrite import draft_section, find_section, overlay_texts
 ```
+
+Then replace the whole `start()` function with this:
 
 ```python
 def start(
@@ -318,6 +334,8 @@ def start(
     if document is None:
         raise UnknownDocument(document_id)
 
+    # Build the document as it currently stands: accepted edits filled in,
+    # original text everywhere else.
     sections = overlay_texts(document.sections, current_texts or {})
 
     try:
@@ -359,11 +377,11 @@ def start(
     return Asking(session_id=session_id, section_id=section.id, question=question)
 ```
 
-Every use of `document.sections` in the old body becomes `sections` (the
-overlaid list); `document` itself is now only used for the initial
-`UnknownDocument` check. `section.text` used for `old_text` therefore reflects
-the author's *current* accepted text, not necessarily the pristine upload —
-correct, since "before" should mean "before this rewrite."
+Everywhere the old code said `document.sections`, it now says `sections`
+(the version with your accepted edits filled in). The `old_text` shown to the
+user is also now based on this current version — which makes sense, since
+"before this edit" should mean "before this edit," not "before anything was
+ever edited."
 
 - [ ] **Step 5: Run the tests**
 
@@ -371,30 +389,29 @@ correct, since "before" should mean "before this rewrite."
 ./.venv/bin/python -m pytest tests/test_orchestrator.py -q
 ```
 
-Expected: all pass. (`resume()` will fail to construct a `RewriteSession` at
-this point wherever it's exercised via `start()`, since `context` has no
-default — that's expected and fixed in Task 3, which runs immediately after.)
+All should pass. (Any test that answers a question, via `resume()`, may still
+fail right now — that's fixed in the next task.)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Save this work**
 
 ```bash
 git add backend/app/store.py backend/app/orchestrator.py backend/tests/test_orchestrator.py
 git commit -m "$(cat <<'EOF'
-start() takes current_texts; RewriteSession freezes the overlaid context
+Rewrites can now see edits already accepted for other sections
 
-An accepted edit to one section now reaches DRAFT and DETECT when a later
-section is rewritten — checking a fee section against a scope that's already
-been superseded is the same silent-inconsistency failure this whole app exists
-to catch, one level up.
+Before this, if you accepted a change to the scope section and then edited
+the fees section, the fees check would still compare against the *original*
+scope — missing exactly the kind of conflict this app is supposed to catch.
 
-RewriteSession.context stores the overlaid view at the moment a question is
-asked, not just document_id — resume() (next commit) reads this instead of
-re-fetching and re-overlaying, so an answer is always checked against exactly
-the document the question was asked about, not a state that could have shifted
-since.
+Now the browser can send along the edits it's already accepted, and the app
+checks against the document as it currently stands.
 
-current_texts defaults to None/{} everywhere, so every call site that doesn't
-pass it behaves exactly as before.
+When the app has to pause and ask the user a question, it now saves a
+snapshot of the document at that exact moment (RewriteSession.context), so the
+answer is always checked against the same document the question was about.
+
+None of this changes anything for a request that doesn't include the new
+list — everything keeps working exactly as before.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -403,30 +420,33 @@ EOF
 
 ---
 
-## Task 3: `resume()` reasons against the frozen context
+## Task 3: Make answering a question use that same snapshot
+
+**What this does:** Task 2 saved a snapshot of the document when a question
+was asked. This task makes the "answer the question" function actually use
+that snapshot, instead of looking up the document fresh.
 
 **Files:**
-- Modify: `backend/app/orchestrator.py`
-- Modify: `backend/tests/test_orchestrator.py`
+- Change: `backend/app/orchestrator.py`
+- Change: `backend/tests/test_orchestrator.py`
 
-**Interfaces:**
-- Consumes: `RewriteSession.context` from Task 2.
-- Produces: `resume()` — same signature as before, behaviour changed internally.
+**What it needs:** the `context` snapshot from Task 2.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the test first**
 
-Append to `backend/tests/test_orchestrator.py`, near the other `resume()`
-tests:
+Add this to `backend/tests/test_orchestrator.py`, near the other tests about
+answering a question:
 
 ```python
-def test_resume_reasons_against_the_frozen_context_not_the_live_document(
+def test_answering_a_question_uses_the_saved_snapshot_not_the_live_document(
     document_id, model, monkeypatch
 ):
-    """The session's context is what was true when the question was asked. A
-    change to the underlying document afterward must not leak into resume() —
-    there is no mechanism for one here (documents are never mutated), but the
-    session must not silently re-derive from document.sections either."""
-    frozen_context = [
+    """We build a "paused" session by hand here, with a snapshot that
+    deliberately says something different from the real document. If
+    answering the question uses the snapshot (correct), the fake number shows
+    up. If it re-reads the real document instead (wrong), the real number
+    shows up."""
+    frozen_snapshot = [
         Section(id="s1", heading="1. Executive Summary", text="A recommendation within the quarter."),
         Section(id="s2", heading="2. Scope of Work", text="The engagement is advisory."),
         Section(id="s4", heading="4. Fees and Payment",
@@ -435,7 +455,7 @@ def test_resume_reasons_against_the_frozen_context_not_the_live_document(
     session_id = store.save_session(
         store.RewriteSession(
             document_id=document_id, section_id="s2", instruction="Be concrete.",
-            draft_text="drafted", context=frozen_context,
+            draft_text="drafted", context=frozen_snapshot,
             asking=[Conflict(section_id="s4", quote="A fixed fee of EUR 999,000, frozen at ask time.",
                               explanation="test", blocking=True)],
             notes=[],
@@ -456,29 +476,32 @@ def test_resume_reasons_against_the_frozen_context_not_the_live_document(
     assert "A fixed fee of EUR 48,000 covers it." not in captured["user"]
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run it — confirm it fails**
 
 ```bash
-./.venv/bin/python -m pytest tests/test_orchestrator.py::test_resume_reasons_against_the_frozen_context_not_the_live_document -q
+./.venv/bin/python -m pytest tests/test_orchestrator.py::test_answering_a_question_uses_the_saved_snapshot_not_the_live_document -q
 ```
 
-Expected: fails — `resume()` still reads `document.sections`, so the real
-document's fee text (`"A fixed fee of EUR 48,000 covers it."`) leaks into the
-prompt instead of the frozen one.
+Right now `resume()` still re-reads the live document, so the real fee text
+(`"A fixed fee of EUR 48,000 covers it."`) shows up where the snapshot's fake
+one should be. That's the failure we expect.
 
-- [ ] **Step 3: Update `resume()`**
+- [ ] **Step 3: Update `resume()` to use the snapshot**
 
-Replace the body of `resume()` in `backend/app/orchestrator.py`:
+Replace the body of `resume()` in `backend/app/orchestrator.py` with this:
 
 ```python
 def resume(session_id: str, *, option_key: str) -> Completed | Declined:
-    """Only branch (a) needs new text. (b) and (c) are the author approving the
-    draft they were shown — returning to the model there would risk handing
-    back different text than the one they just accepted.
+    """Answer a paused question.
 
-    Note the return type: no `Asking` arm. Whatever branch (a)'s re-check finds
-    becomes a note on the result, never a second question — that guarantee is
-    readable from this signature, not from a counter anywhere in the body.
+    Only one of the three answers ("hold the other section") needs a new
+    rewrite. The other two mean "go ahead with what I was already shown" — so
+    going back to the model there would risk handing back different text than
+    what the author actually agreed to.
+
+    This function can only return a finished result or a "declined" — never a
+    second question. That's not a rule we remember to follow; it's built into
+    what this function is allowed to return.
     """
     session = store.get_session(session_id)
     if session is None:
@@ -486,14 +509,15 @@ def resume(session_id: str, *, option_key: str) -> Completed | Declined:
     if session.resolved:
         raise SessionFinished(session_id)
 
-    # Still the correctness check that the document itself wasn't lost to a
-    # restart. Its .sections are no longer what DRAFT/DETECT reason against —
-    # session.context is — but this existence check stays.
+    # We still check the document itself hasn't disappeared (say, from a
+    # server restart) — that check doesn't change. What changes is that we no
+    # longer use this document's sections for anything else below; we use the
+    # frozen snapshot instead.
     document = store.get_document(session.document_id)
     if document is None:
         raise UnknownDocument(session.document_id)
 
-    branch = Branch(option_key)  # ValueError on anything else, by design
+    branch = Branch(option_key)  # raises a clear error on anything else
     by_id = {s.id: s for s in session.context}
     heading = by_id[session.asking[0].section_id].heading
 
@@ -521,41 +545,37 @@ def resume(session_id: str, *, option_key: str) -> Completed | Declined:
     return Completed(section_id=section.id, old_text=section.text, new_text=new_text, notes=notes)
 ```
 
-Every `document.sections` becomes `session.context`; the `document` lookup
-itself stays, doing only the existence check it always did.
-
 - [ ] **Step 4: Run the tests**
 
 ```bash
 ./.venv/bin/python -m pytest tests/test_orchestrator.py -q
 ```
 
-Expected: all pass, including every pre-existing `resume()` test — they
-already go through `start()` first, which now always populates `context`, so
-they exercise the new path without needing changes themselves.
+Everything should pass — including all the older tests about answering
+questions. They already go through `start()` first, which now always saves a
+snapshot, so they exercise the fix automatically without needing changes.
 
-- [ ] **Step 5: Run the whole backend suite**
+- [ ] **Step 5: Run the whole backend test suite**
 
 ```bash
 ./.venv/bin/python -m pytest tests/ -q
 ```
 
-Expected: passes except `test_api.py`, which still constructs sessions the old
-way in spirit — actually it doesn't construct `RewriteSession` directly at
-all, so this should already be green. If anything unrelated fails, stop and
-find out why before continuing.
+Everything except `test_api.py` should be untouched by this task, and it
+should already be fine too. If something unrelated breaks, stop and figure
+out why before moving on.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Save this work**
 
 ```bash
 git add backend/app/orchestrator.py backend/tests/test_orchestrator.py
 git commit -m "$(cat <<'EOF'
-resume() reasons against the frozen session context
+Answering a question now uses the frozen snapshot
 
-Every use of document.sections inside resume() becomes session.context. The
-document lookup itself stays — it is still how an answer to a session whose
-document was lost to a restart gets a clean 404 — but its .sections are no
-longer what a HOLD redraft or re-check is measured against.
+Every place resume() used to look at the live document, it now looks at the
+snapshot saved when the question was first asked. The one exception: we still
+check that the document itself hasn't disappeared — that's a different check
+and it stays.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -564,93 +584,98 @@ EOF
 
 ---
 
-## Task 4: `app/export.py` — sections back into a `.docx`
+## Task 4: Turn sections back into a real Word file
+
+**What this does:** Right now the app can only read a `.docx` file and split
+it into sections. This task adds the reverse: given a list of sections,
+build a real `.docx` file from them.
 
 **Files:**
-- Create: `backend/app/export.py`
-- Create: `backend/tests/test_export.py`
+- New file: `backend/app/export.py`
+- New file: `backend/tests/test_export.py`
 
-**Interfaces:**
-- Produces: `def build_docx(sections: list[Section]) -> bytes`. Task 5 (the
-  export endpoint) is its only caller.
+**What it produces:** a function called `build_docx(sections)` that returns
+the raw bytes of a Word file. Task 5 is the only place that calls it.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the tests first**
 
 Create `backend/tests/test_export.py`:
 
 ```python
-"""Tests for turning sections back into a .docx — the inverse of parsing.py.
+"""Tests for turning sections back into a .docx file.
 
-Round-trips through parse_docx() rather than asserting on python-docx
-internals: the only thing that matters is that a document built here parses
-back into the same sections a moment later.
+Instead of checking the internal details of how python-docx builds a file, we
+build a file and then read it right back in with our own reader
+(parse_docx). If what comes out matches what went in, we know it worked.
 """
 
 from app.export import build_docx
 from app.parsing import Section, parse_docx
 
 
-def test_a_single_section_round_trips():
+def test_a_single_section_comes_back_the_same():
     sections = [Section(id="s1", heading="1. Scope", text="The engagement is advisory.")]
 
-    reparsed = parse_docx(build_docx(sections))
+    reread = parse_docx(build_docx(sections))
 
-    assert [s.heading for s in reparsed.sections] == ["1. Scope"]
-    assert reparsed.sections[0].text == "The engagement is advisory."
+    assert [s.heading for s in reread.sections] == ["1. Scope"]
+    assert reread.sections[0].text == "The engagement is advisory."
 
 
-def test_multiple_sections_round_trip_in_order():
+def test_several_sections_stay_in_the_same_order():
     sections = [
         Section(id="s1", heading="1. Executive Summary", text="A recommendation."),
         Section(id="s2", heading="2. Scope of Work", text="The engagement is advisory."),
         Section(id="s3", heading="3. Fees", text="A fixed fee of EUR 48,000."),
     ]
 
-    reparsed = parse_docx(build_docx(sections))
+    reread = parse_docx(build_docx(sections))
 
-    assert [s.heading for s in reparsed.sections] == [
+    assert [s.heading for s in reread.sections] == [
         "1. Executive Summary", "2. Scope of Work", "3. Fees",
     ]
-    assert [s.text for s in reparsed.sections] == [s.text for s in sections]
+    assert [s.text for s in reread.sections] == [s.text for s in sections]
 
 
-def test_a_multi_paragraph_section_round_trips():
+def test_a_section_with_more_than_one_paragraph_comes_back_the_same():
     sections = [Section(id="s1", heading="1. Scope", text="First paragraph.\n\nSecond paragraph.")]
 
-    reparsed = parse_docx(build_docx(sections))
+    reread = parse_docx(build_docx(sections))
 
-    assert reparsed.sections[0].text == "First paragraph.\n\nSecond paragraph."
+    assert reread.sections[0].text == "First paragraph.\n\nSecond paragraph."
 
 
-def test_a_preamble_round_trips_without_a_heading_style():
+def test_the_opening_text_before_any_heading_comes_back_correctly():
     sections = [
         Section(id="preamble", heading="(untitled opening)", text="Proposal: Example."),
         Section(id="s1", heading="1. Scope", text="The engagement is advisory."),
     ]
 
-    reparsed = parse_docx(build_docx(sections))
+    reread = parse_docx(build_docx(sections))
 
-    assert reparsed.sections[0].id == "preamble"
-    assert "Proposal: Example." in reparsed.sections[0].text
-    assert reparsed.sections[1].heading == "1. Scope"
+    assert reread.sections[0].id == "preamble"
+    assert "Proposal: Example." in reread.sections[0].text
+    assert reread.sections[1].heading == "1. Scope"
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run the tests — confirm they fail**
 
 ```bash
 ./.venv/bin/python -m pytest tests/test_export.py -q
 ```
 
-Expected: `ModuleNotFoundError: No module named 'app.export'`.
+Expected: `ModuleNotFoundError: No module named 'app.export'` — the file
+doesn't exist yet.
 
-- [ ] **Step 3: Create `export.py`**
+- [ ] **Step 3: Write `export.py`**
 
 ```python
-"""Turn sections back into a .docx — the inverse of parsing.py.
+"""Turn a list of sections back into a real .docx file.
 
-Same shape the sample-document scripts already use: a plain paragraph for a
-preamble (no heading style, so it re-parses as a preamble again on the way
-back in), Heading 1 + body paragraphs for everything else, in the order given.
+This is the reverse of what parsing.py does. It builds the file the same way
+the sample documents in this project are already built: plain text for
+anything before the first heading, and a proper "Heading 1" style plus normal
+paragraphs for everything else.
 """
 
 from io import BytesIO
@@ -664,6 +689,9 @@ def build_docx(sections: list[Section]) -> bytes:
     document = Document()
 
     for section in sections:
+        # The opening text (before any real heading) gets no heading style,
+        # so when we read it back in, it's correctly recognized as the
+        # opening text again — not as its own numbered section.
         if section.heading != PREAMBLE_HEADING:
             document.add_paragraph(section.heading, style="Heading 1")
         for paragraph in section.text.split("\n\n"):
@@ -680,19 +708,21 @@ def build_docx(sections: list[Section]) -> bytes:
 ./.venv/bin/python -m pytest tests/test_export.py -q
 ```
 
-Expected: all pass.
+All should pass.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Save this work**
 
 ```bash
 git add backend/app/export.py backend/tests/test_export.py
 git commit -m "$(cat <<'EOF'
-Add export.py: sections back into a .docx
+Add export.py — turn sections back into a real .docx file
 
-The inverse of parsing.py, using the exact same shape the sample-document
-scripts already generate — a plain paragraph for a preamble, Heading 1 + body
-paragraphs for everything else. Tested by round-tripping through parse_docx()
-rather than asserting on python-docx internals.
+The reverse of parsing.py. Built the same way the sample documents in this
+project already are: plain paragraphs for the opening text, a real heading
+style plus body paragraphs for everything else.
+
+Tested by building a file and reading it straight back in, rather than
+checking internal details of how python-docx works.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -701,30 +731,33 @@ EOF
 
 ---
 
-## Task 5: `POST /documents/{document_id}/export`
+## Task 5: Add the download web address
+
+**What this does:** Adds a new web address the browser can send a request to,
+to get back a real `.docx` file with the current, accepted edits in it.
 
 **Files:**
-- Modify: `backend/app/main.py`
-- Modify: `backend/tests/test_api.py`
+- Change: `backend/app/main.py`
+- Change: `backend/tests/test_api.py`
 
-**Interfaces:**
-- Consumes: `build_docx` (Task 4), `overlay_texts` (Task 1).
-- Produces: `POST /documents/{document_id}/export`, body
-  `{"sections": [{"id": str, "text": str}]}`, response: raw `.docx` bytes.
+**What it needs:** `build_docx` from Task 4, `overlay_texts` from Task 1.
 
-- [ ] **Step 1: Write the failing tests**
+**What it produces:** `POST /documents/{document_id}/export` — send it a list
+of `{id, text}` pairs, get back the raw bytes of a `.docx` file.
 
-Append to `backend/tests/test_api.py`:
+- [ ] **Step 1: Write the tests first**
+
+Add this to `backend/tests/test_api.py`:
 
 ```python
-# --- export ----------------------------------------------------------------
+# --- downloading the finished document -------------------------------------
 
 
 def export(document_id: str, sections: list[dict]):
     return client.post(f"/documents/{document_id}/export", json={"sections": sections})
 
 
-def test_export_returns_a_docx_with_the_submitted_text(document_id):
+def test_export_includes_the_text_you_sent(document_id):
     from app.parsing import parse_docx
 
     response = export(document_id, [{"id": "s2", "text": "A new, concrete scope."}])
@@ -733,72 +766,77 @@ def test_export_returns_a_docx_with_the_submitted_text(document_id):
     assert response.headers["content-type"] == (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-    reparsed = parse_docx(response.content)
-    scope = next(s for s in reparsed.sections if s.heading == "2. Scope of Work")
+    reread = parse_docx(response.content)
+    scope = next(s for s in reread.sections if s.heading == "2. Scope of Work")
     assert scope.text == "A new, concrete scope."
 
 
-def test_export_falls_back_to_the_original_text_for_a_section_not_submitted(document_id):
+def test_export_keeps_the_original_text_for_a_section_you_did_not_send(document_id):
     from app.parsing import parse_docx
 
     response = export(document_id, [{"id": "s2", "text": "A new, concrete scope."}])
 
-    reparsed = parse_docx(response.content)
-    fees = next(s for s in reparsed.sections if s.heading == "3. Fees")
+    reread = parse_docx(response.content)
+    fees = next(s for s in reread.sections if s.heading == "3. Fees")
     assert fees.text == PROPOSAL[5][1]
 
 
-def test_export_ignores_a_section_id_the_document_does_not_have(document_id):
+def test_export_ignores_a_section_id_that_does_not_exist(document_id):
     response = export(document_id, [{"id": "s99", "text": "orphaned"}])
 
     assert response.status_code == 200
 
 
-def test_export_preserves_the_documents_original_order(document_id):
+def test_export_keeps_the_original_section_order(document_id):
     from app.parsing import parse_docx
 
     response = export(document_id, [])
 
-    reparsed = parse_docx(response.content)
-    assert [s.heading for s in reparsed.sections] == [
+    reread = parse_docx(response.content)
+    assert [s.heading for s in reread.sections] == [
         "1. Executive Summary", "2. Scope of Work", "3. Fees",
     ]
 
 
-def test_export_404s_on_an_unknown_document():
+def test_export_returns_a_clear_error_for_an_unknown_document():
     response = export("nope", [])
 
     assert response.status_code == 404
     assert "document" in response.json()["detail"].lower()
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run the tests — confirm they fail**
 
 ```bash
 ./.venv/bin/python -m pytest tests/test_api.py -k export -q
 ```
 
-Expected: mostly `404`s from FastAPI's own unmatched-route handling, which
-looks similar to the real thing but isn't — `test_export_404s_on_an_unknown_document`
-specifically still fails, because FastAPI's generic 404 body is
-`{"detail": "Not Found"}`, and `"document"` is not a substring of `"not
-found"`. That's the tell that this is the wrong 404, not the right one.
+Most of these will fail with a `404`, but for the wrong reason: the web
+address doesn't exist yet at all, so FastAPI's own generic "not found" kicks
+in. You can tell the difference in
+`test_export_returns_a_clear_error_for_an_unknown_document` — it checks for
+the word "document" in the error message, and FastAPI's generic message just
+says `"Not Found"`, which doesn't contain that word. So that one test fails
+even though the status code happens to match — which is exactly the sign
+we're looking for that the real feature isn't built yet.
 
-- [ ] **Step 3: Add the endpoint**
+- [ ] **Step 3: Add the new web address**
 
-In `backend/app/main.py`, add `Response` to the `fastapi` import and add two
-new imports:
+In `backend/app/main.py`, add `Response` to the existing import from
+`fastapi`:
 
 ```python
 from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 ```
+
+Add two more imports:
 
 ```python
 from .export import build_docx
 from .rewrite import overlay_texts
 ```
 
-Append near the bottom of the file, after the `answer` endpoint:
+Add this near the bottom of the file, after the existing `answer` function:
 
 ```python
 class SectionText(BaseModel):
@@ -812,13 +850,14 @@ class ExportRequest(BaseModel):
 
 @app.post("/documents/{document_id}/export")
 async def export_document(document_id: str, request: ExportRequest) -> Response:
-    """Assemble the current state of the document into a .docx.
+    """Build the current, edited version of the document into a real .docx
+    file, and send it back.
 
-    Order and headings always come from the backend's own stored document,
-    never from the request — the request supplies text only, via the same
-    overlay_texts() the rewrite path uses. A section id the request is missing
-    falls back to the original text rather than being dropped; an id the
-    request has that the document doesn't recognise is ignored.
+    The order and the headings always come from the document we already have
+    saved — never from the request. Only the text comes from the request. If
+    the request is missing text for a section, we just use that section's
+    original text instead of leaving it blank. If the request includes an id
+    we don't recognize, we just ignore it.
     """
     document = store.get_document(document_id)
     if document is None:
@@ -842,29 +881,31 @@ async def export_document(document_id: str, request: ExportRequest) -> Response:
 ./.venv/bin/python -m pytest tests/test_api.py -q
 ```
 
-Expected: all pass, existing tests unaffected.
+Everything should pass, including all the older tests.
 
-- [ ] **Step 5: Run the whole backend suite**
+- [ ] **Step 5: Run the whole backend test suite**
 
 ```bash
 ./.venv/bin/python -m pytest tests/ -q
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Save this work**
 
 ```bash
 git add backend/app/main.py backend/tests/test_api.py
 git commit -m "$(cat <<'EOF'
-Add POST /documents/{id}/export
+Add a web address to download the finished document
 
-Reuses overlay_texts() from the rewrite path rather than reimplementing
-"apply submitted text over the stored original" a second time — the same
-function now backs both "what does DRAFT/DETECT see" and "what goes in the
-downloaded file."
+We reuse overlay_texts() from Task 1 instead of writing similar logic a
+second time — the same function now decides both "what should the AI see
+when checking for conflicts" and "what should actually go in the downloaded
+file."
 
-Order and headings are never taken from the request, only text — a defensive
-choice so a partial or buggy client payload can drop nothing and corrupt
-nothing about the document's structure.
+The order and headings always come from the document we already have saved,
+never from the incoming request — only the text does. That way a broken or
+partial request from the browser can't corrupt the document's structure, it
+can only be missing some edits (which then just fall back to the original
+text).
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -873,20 +914,23 @@ EOF
 
 ---
 
-## Task 6: `POST /rewrite` accepts `current_texts`
+## Task 6: Let a rewrite request include the accepted-edits list
+
+**What this does:** Right now `orchestrator.start()` can take the
+accepted-edits list (from Task 2), but the actual web request from the
+browser can't send one yet. This task connects the two.
 
 **Files:**
-- Modify: `backend/app/main.py`
-- Modify: `backend/tests/test_api.py`
+- Change: `backend/app/main.py`
+- Change: `backend/tests/test_api.py`
 
-**Interfaces:**
-- Produces: `RewriteRequest.current_texts: dict[str, str] = {}`, threaded into
-  `orchestrator.start(..., current_texts=request.current_texts)`.
+**What it produces:** the `/rewrite` request can now include
+`current_texts`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the tests first**
 
-In `backend/tests/test_api.py`, extend the `rewrite()` helper to optionally
-pass `current_texts`:
+In `backend/tests/test_api.py`, update the existing `rewrite()` helper
+function so it can optionally send the new list:
 
 ```python
 def rewrite(
@@ -899,10 +943,10 @@ def rewrite(
     return client.post("/rewrite", json=body)
 ```
 
-Then append:
+Then add these tests:
 
 ```python
-def test_current_texts_reach_the_draft_prompt(document_id, monkeypatch):
+def test_current_texts_reach_the_rewrite_prompt(document_id, monkeypatch):
     captured = {}
 
     def draft(**kwargs):
@@ -922,29 +966,29 @@ def test_current_texts_reach_the_draft_prompt(document_id, monkeypatch):
     assert "A renegotiated fee of EUR 90,000." in captured["user"]
 
 
-def test_no_current_texts_still_works(document_id, fake_model):
+def test_a_rewrite_request_without_current_texts_still_works(document_id, fake_model):
     response = rewrite(document_id)
 
     assert response.status_code == 200
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run the tests — confirm they fail**
 
 ```bash
 ./.venv/bin/python -m pytest tests/test_api.py -k current_texts -q
 ```
 
-Expected: `test_current_texts_reach_the_draft_prompt` fails with an
-`AssertionError`, not a `422`. None of the models in `main.py` set
-`extra="forbid"`, so a `current_texts` key in the request body is currently
-just silently ignored by Pydantic rather than rejected — the request succeeds,
-`orchestrator.start()` runs without an override, and the renegotiated fee text
-never reaches the captured prompt. `test_no_current_texts_still_works` already
-passes, since it doesn't depend on the new field at all.
+The first test should fail — but not with the error you might expect. None
+of the request formats in `main.py` reject extra fields they don't recognize,
+so right now `current_texts` in the request is just silently ignored. The
+request goes through, the rewrite happens without the override, and the
+renegotiated fee text never shows up where the test looks for it — so the
+test fails on that missing text, not on a rejected request. The second test
+already passes, since it doesn't depend on the new field at all.
 
 - [ ] **Step 3: Add the field**
 
-In `backend/app/main.py`, add the field to `RewriteRequest`:
+In `backend/app/main.py`, update `RewriteRequest`:
 
 ```python
 class RewriteRequest(BaseModel):
@@ -961,7 +1005,7 @@ class RewriteRequest(BaseModel):
         return value.strip()
 ```
 
-And pass it through in the `rewrite` endpoint:
+And pass it through in the `rewrite` function:
 
 ```python
     try:
@@ -979,27 +1023,27 @@ And pass it through in the `rewrite` endpoint:
 ./.venv/bin/python -m pytest tests/test_api.py -q
 ```
 
-Expected: all pass.
+All should pass.
 
-- [ ] **Step 5: Run the whole backend suite one more time**
+- [ ] **Step 5: Run the whole backend test suite one more time**
 
 ```bash
 ./.venv/bin/python -m pytest tests/ -q
 ```
 
-Expected: same count as before this plan started, plus every test added in
-Tasks 1–6.
+You should see the same number of passing tests as before this whole plan
+started, plus everything added in Tasks 1 through 6.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Save this work**
 
 ```bash
 git add backend/app/main.py backend/tests/test_api.py
 git commit -m "$(cat <<'EOF'
-POST /rewrite accepts current_texts
+The /rewrite request can now carry the accepted-edits list
 
-Defaults to {}, so every existing caller behaves exactly as before. The
-backend half of the loop is now complete: accept an edit, rewrite another
-section, and the second rewrite's conflict check sees the first one.
+Defaults to an empty list, so nothing that already works changes. The backend
+side of this whole feature is done: accept an edit, rewrite a different
+section, and the second rewrite now knows about the first.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1008,19 +1052,22 @@ EOF
 
 ---
 
-## Task 7: `lib/api.ts` — the frontend contract
+## Task 7: Update the browser's connection to the backend
+
+**What this does:** Teaches the frontend's API helper file about the two new
+things: sending the accepted-edits list with a rewrite, and downloading the
+finished file.
 
 **Files:**
-- Modify: `frontend/lib/api.ts`
+- Change: `frontend/lib/api.ts`
 
-**Interfaces:**
-- Produces: `rewriteSection()` gains an optional `currentTexts` input, sent as
-  `current_texts`. New `exportDocument(input: {documentId: string; sections: Record<string, string>}): Promise<Blob>`.
-  Task 10 (`ExportPanel.tsx`) is its only caller.
+**What it produces:** `rewriteSection()` can now send the accepted-edits
+list. A new function, `exportDocument()`, downloads the file. Task 10 is the
+only place that calls it.
 
 - [ ] **Step 1: Edit the file**
 
-Replace `rewriteSection` and append `exportDocument`:
+Replace `rewriteSection` and add `exportDocument` after it:
 
 ```ts
 export async function rewriteSection(input: {
@@ -1044,8 +1091,9 @@ export async function rewriteSection(input: {
 }
 
 /**
- * Returns the .docx as a Blob, ready for the browser's download mechanism.
- * This endpoint returns a file, not JSON, so it doesn't go through unwrap().
+ * Downloads the finished document as a Blob (a file, not text). This
+ * endpoint sends back an actual file, so we don't use the usual unwrap()
+ * helper, which expects a JSON response.
  */
 export async function exportDocument(input: {
   documentId: string;
@@ -1068,29 +1116,30 @@ export async function exportDocument(input: {
 }
 ```
 
-`answerQuestion()` is unchanged — per the spec, a suspended question's context
-is frozen server-side, so the answer request has no `current_texts` to send.
+`answerQuestion()` doesn't need to change — as decided in the design, once a
+question has been asked, the answer always uses the snapshot the backend
+already saved. There's nothing new to send along with the answer.
 
-- [ ] **Step 2: Typecheck**
+- [ ] **Step 2: Check the types are still correct**
 
 ```bash
 cd frontend && npx tsc --noEmit
 ```
 
-Expected: clean — nothing yet calls `exportDocument`, and `rewriteSection`'s
-new parameter is optional, so `page.tsx`'s existing call site still compiles.
+Should show no errors — the new list is optional, and nothing calls
+`exportDocument` yet.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Save this work**
 
 ```bash
 git add frontend/lib/api.ts
 git commit -m "$(cat <<'EOF'
-lib/api.ts: current_texts on rewriteSection, add exportDocument()
+Frontend can now send accepted edits and download the file
 
-exportDocument() returns a Blob rather than going through unwrap() — this
-endpoint answers with a file, not JSON. answerQuestion() is untouched: a
-suspended question's context is frozen server-side, so there is nothing for
-the answer request to override.
+rewriteSection() can carry the accepted-edits list. exportDocument() gets the
+finished file back as a downloadable Blob instead of JSON, since this
+endpoint sends a real file. answerQuestion() is unchanged — once a question is
+asked, the answer always uses the snapshot the backend already saved.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1099,19 +1148,22 @@ EOF
 
 ---
 
-## Task 8: `ResultPanel.tsx` — Accept into final document
+## Task 8: Add the "Accept into final document" button
+
+**What this does:** After a rewrite finishes, the user needs a clear way to
+say "yes, keep this." This adds that button to the result screen.
 
 **Files:**
-- Modify: `frontend/app/components/ResultPanel.tsx`
+- Change: `frontend/app/components/ResultPanel.tsx`
 
-**Interfaces:**
-- Produces: `ResultPanel` gains two props: `onAccept: () => void`,
-  `accepted: boolean`. Task 10 (`page.tsx`) supplies both.
+**What it produces:** `ResultPanel` now needs two more pieces of
+information passed to it: `onAccept` (what to do when the button is
+clicked) and `accepted` (whether this result has already been accepted).
+Task 10 supplies both.
 
 - [ ] **Step 1: Edit the component**
 
-Replace the file's header (`NoteCard` is unchanged, only `ResultPanel` itself
-changes):
+The `NoteCard` part of the file doesn't change — only `ResultPanel` itself:
 
 ```tsx
 export function ResultPanel({
@@ -1178,29 +1230,29 @@ export function ResultPanel({
 }
 ```
 
-- [ ] **Step 2: Typecheck**
+- [ ] **Step 2: Check the types**
 
 ```bash
 npx tsc --noEmit
 ```
 
-Expected: an error at `page.tsx`'s `<ResultPanel result={result} />` call
-site — it's now missing two required props. That's correct; Task 10 supplies
-them. No other file should error.
+You'll now see an error where `page.tsx` uses `<ResultPanel result={result} />`
+— it's missing the two new pieces of information. That's expected. Task 10
+fixes it. No other file should show an error.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Save this work**
 
 ```bash
 git add frontend/app/components/ResultPanel.tsx
 git commit -m "$(cat <<'EOF'
-ResultPanel: an explicit Accept button
+Add an "Accept into final document" button to the result screen
 
-Nothing is accepted implicitly — clicking Accept is the only thing that
-commits a rewrite into the tracked document state, so re-running a rewrite you
-don't like never silently overwrites one you already accepted.
+Nothing is kept automatically — clicking Accept is the only thing that adds a
+rewrite to the final document. That way, trying a rewrite you don't like and
+running it again never quietly overwrites one you already accepted.
 
-page.tsx does not yet supply the new props — fixed in a later commit in this
-same task sequence.
+page.tsx doesn't supply the new button's information yet — that's fixed in a
+later commit.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1209,14 +1261,18 @@ EOF
 
 ---
 
-## Task 9: `SectionList.tsx` — mark edited sections
+## Task 9: Show which sections have been edited
+
+**What this does:** Adds a small mark next to any section in the list that
+already has an accepted edit, so the user can see their progress at a
+glance.
 
 **Files:**
-- Modify: `frontend/app/components/SectionList.tsx`
+- Change: `frontend/app/components/SectionList.tsx`
 
-**Interfaces:**
-- Produces: `SectionList` gains a required prop `editedIds: Set<string>`.
-  Task 10 (`page.tsx`) computes and supplies it.
+**What it produces:** `SectionList` now needs one more piece of
+information: `editedIds`, the set of section ids that have an accepted
+edit. Task 10 supplies it.
 
 - [ ] **Step 1: Edit the component**
 
@@ -1293,25 +1349,25 @@ export function SectionList({
 }
 ```
 
-- [ ] **Step 2: Typecheck**
+- [ ] **Step 2: Check the types**
 
 ```bash
 npx tsc --noEmit
 ```
 
-Expected: an additional error at `page.tsx`'s `<SectionList ... />` call site
-— missing `editedIds`. Fixed in Task 10.
+Now there's a second error, at `page.tsx`'s `<SectionList ... />` — it's
+missing `editedIds`. Also expected, also fixed in Task 10.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Save this work**
 
 ```bash
 git add frontend/app/components/SectionList.tsx
 git commit -m "$(cat <<'EOF'
-SectionList: mark sections with an accepted edit
+Show a mark next to sections that have an accepted edit
 
-A small dot next to the heading, and a running count in the section summary —
-enough to see progress across a multi-section session without a dedicated
-progress view.
+A small dot next to the heading, plus a running count in the summary line —
+enough to see progress across a session with several edits, without needing
+a separate progress screen.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1320,16 +1376,20 @@ EOF
 
 ---
 
-## Task 10: `ExportPanel.tsx` + wiring `page.tsx`
+## Task 10: Build the download button and connect everything
+
+**What this does:** This is the task that ties everything together. It adds
+the "Mark complete & download" button, and wires up the accepted-edits list
+across the whole page.
 
 **Files:**
-- Create: `frontend/app/components/ExportPanel.tsx`
-- Modify: `frontend/app/page.tsx`
+- New file: `frontend/app/components/ExportPanel.tsx`
+- Change: `frontend/app/page.tsx`
 
-**Interfaces:**
-- Consumes: `exportDocument` (Task 7), `ResultPanel`'s new props (Task 8),
-  `SectionList`'s new prop (Task 9).
-- Closes out every `tsc` error the last two tasks deliberately introduced.
+**What it needs:** `exportDocument` from Task 7, the new button props from
+Task 8, the new list prop from Task 9.
+
+**What it fixes:** every error `tsc` has been showing since Tasks 8 and 9.
 
 - [ ] **Step 1: Create `ExportPanel.tsx`**
 
@@ -1340,13 +1400,14 @@ import { useState } from "react";
 import { exportDocument } from "@/lib/api";
 
 /**
- * The document-level "I'm done" action — deliberately its own component with
- * its own busy/error state, so a failed download is never confused with a
- * failed rewrite in the UI.
+ * The "I'm done, give me the file" button. It has its own loading and error
+ * state, kept separate from a rewrite's, so a failed download never looks
+ * like a failed rewrite.
  *
- * Uses the global `document` object to trigger the browser download. Kept out
- * of page.tsx on purpose: page.tsx already has a `document` state variable
- * (the uploaded document), which would shadow the browser global there.
+ * This file uses the browser's built-in `document` object to trigger the
+ * download. It has to live in its own file rather than inside page.tsx,
+ * because page.tsx already has a variable named `document` (the uploaded
+ * file) — that would hide the real one.
  */
 export function ExportPanel({
   documentId,
@@ -1382,8 +1443,8 @@ export function ExportPanel({
     <div className="rounded-lg border border-slate-300 bg-white p-6">
       <h2 className="mb-1 font-semibold">3. Finish up</h2>
       <p className="mb-4 text-sm text-slate-500">
-        Downloads every section as it currently stands — accepted edits where
-        you made them, the original text everywhere else.
+        Downloads every section as it currently stands — your accepted edits
+        where you made them, the original text everywhere else.
       </p>
       <button
         type="button"
@@ -1400,7 +1461,7 @@ export function ExportPanel({
 }
 ```
 
-- [ ] **Step 2: Wire `page.tsx`**
+- [ ] **Step 2: Wire up `page.tsx`**
 
 Add the import:
 
@@ -1408,13 +1469,13 @@ Add the import:
 import { ExportPanel } from "./components/ExportPanel";
 ```
 
-Add state, right after the existing `selectedId` state:
+Add a new piece of state, right after `selectedId`:
 
 ```tsx
   const [currentTexts, setCurrentTexts] = useState<Record<string, string>>({});
 ```
 
-Seed it on upload — replace the `onUploaded` callback body:
+Fill it in when a document is uploaded — replace the `onUploaded` part:
 
 ```tsx
           <UploadPanel
@@ -1431,7 +1492,8 @@ Seed it on upload — replace the `onUploaded` callback body:
           />
 ```
 
-Send it with every rewrite — replace `handleInstruction`:
+Send it along with every rewrite, and add a function for the Accept button —
+replace `handleInstruction` with this:
 
 ```tsx
   async function handleInstruction(instruction: string) {
@@ -1453,7 +1515,7 @@ Send it with every rewrite — replace `handleInstruction`:
   }
 ```
 
-Compute `editedIds` right before the `return`:
+Work out which sections have been edited, just above the `return`:
 
 ```tsx
   const editedIds = new Set(
@@ -1463,7 +1525,7 @@ Compute `editedIds` right before the `return`:
   );
 ```
 
-Pass the new props to `SectionList`:
+Pass the new information to `SectionList`:
 
 ```tsx
               <SectionList
@@ -1479,8 +1541,8 @@ Pass the new props to `SectionList`:
               />
 ```
 
-Mount `ExportPanel` in the left column, right after `SectionList` closes
-(still inside the `{document && (...)}` block):
+Add `ExportPanel` right after `SectionList`, still inside the same
+`{document && (...)}` block:
 
 ```tsx
               <ExportPanel
@@ -1490,7 +1552,7 @@ Mount `ExportPanel` in the left column, right after `SectionList` closes
               />
 ```
 
-Pass the new props to `ResultPanel`:
+Pass the new information to `ResultPanel`:
 
 ```tsx
           {result?.status === "complete" && (
@@ -1502,59 +1564,60 @@ Pass the new props to `ResultPanel`:
           )}
 ```
 
-- [ ] **Step 3: Typecheck — must now be clean**
+- [ ] **Step 3: Check the types — should be clean now**
 
 ```bash
 npx tsc --noEmit
 ```
 
-Expected: no output. Every error introduced in Tasks 8–9 is resolved here.
+No errors expected. Every error from Tasks 8 and 9 should be gone.
 
-- [ ] **Step 4: Build**
+- [ ] **Step 4: Build the frontend**
 
 ```bash
 npx next build
 ```
 
-Expected: succeeds.
+Should finish without errors.
 
-- [ ] **Step 5: Check it by hand in the browser**
+- [ ] **Step 5: Try it yourself in the browser**
 
-Two terminals:
+Open two terminal windows:
 
 ```bash
 cd backend && ./.venv/bin/python -m uvicorn app.main:app --port 8000 --reload
 cd frontend && npm run dev
 ```
 
-At `http://localhost:3000`: upload `backend/sample/meridian-proposal.docx`.
+Go to `http://localhost:3000` and upload `backend/sample/meridian-proposal.docx`.
 
-1. Rewrite **2. Scope of Work**, click **Accept into final document** — confirm
-   the button becomes "Accepted" and a dot appears next to the section in the
-   list.
-2. Select **4. Fees and Payment**, ask for a change, confirm the conflict
-   question (if one comes back) reads correctly.
-3. Click **Mark complete & download** — confirm a `.docx` downloads, and open
-   it: the scope section should show your accepted edit; every other section
-   should read exactly as in the original upload.
-4. Confirm downloading **without accepting anything** still produces the
-   unmodified original document — not an error.
+1. Rewrite **2. Scope of Work**, then click **Accept into final document**.
+   Check that the button changes to say "Accepted," and a dot appears next
+   to the section in the list.
+2. Pick **4. Fees and Payment**, ask for a change, and check that the
+   question (if there is one) reads correctly.
+3. Click **Mark complete & download**. Check that a `.docx` file downloads,
+   and open it — the scope section should show your edit, and every other
+   section should look exactly like the original.
+4. Try downloading **without accepting anything**. It should just download
+   the original document, unchanged — not show an error.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Save this work**
 
 ```bash
 git add frontend/app/components/ExportPanel.tsx frontend/app/page.tsx
 git commit -m "$(cat <<'EOF'
-Wire up accept-and-download end to end
+Connect accept-and-download, start to finish
 
-currentTexts is seeded from the upload, updated only by an explicit Accept
-click, sent with every rewrite so later sections see earlier accepted edits,
-and handed to ExportPanel for the final download.
+The accepted-edits list starts out as the original text for every section,
+only changes when you click Accept, gets sent along with every rewrite (so
+later edits know about earlier ones), and gets handed to ExportPanel for the
+final download.
 
-ExportPanel is its own component rather than inline in page.tsx specifically
-because page.tsx already has a `document` state variable that would shadow the
-browser's global document.createElement — the download trigger needs the real
-one.
+ExportPanel lives in its own file instead of inside page.tsx for a specific
+reason: page.tsx already has a variable called `document` (the uploaded
+file), which would hide the browser's real `document` object — and the
+download button needs the real one.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
@@ -1563,30 +1626,30 @@ EOF
 
 ---
 
-## Self-review notes
+## Checking this plan against the design
 
-**Spec coverage.** §2–3 (the override reaching later rewrites) → Tasks 1–2.
-§4.3 (frozen context across a suspended question) → Task 3, with a test that
-constructs a session by hand specifically to prove `resume()` cannot see a
-document state different from what it was given. §4.4–4.5 (export module and
-endpoint) → Tasks 4–5. §5 (frontend state, accept model, download mechanics) →
-Tasks 7–10. §6 (notes never applied, nothing persists) → nothing in this plan
-touches notes or adds persistence, so this holds by omission, not by a
-specific task. §7 (edge cases) → covered by name in Task 5's tests (missing
-id, unknown id, unknown document) and Task 10's manual check (zero edits
-accepted still downloads).
+**Does it cover everything in the design document?** Yes. The part about
+later rewrites seeing earlier accepted edits is Tasks 1–2. Freezing the
+document when a question is asked is Task 3, with a test built specifically
+to prove it — by hand-building a "paused" session whose saved snapshot says
+something different from the real document, and checking the snapshot wins.
+Turning sections into a file and serving it for download are Tasks 4–5. All
+the frontend wiring is Tasks 7–10. Nothing in this plan touches the
+"suggestions we show but don't apply" feature or adds any kind of saving
+between visits — both stay exactly as they already were, simply by not being
+touched.
 
-**Type consistency.** `overlay_texts` (Task 1) is used unchanged by
-`orchestrator.start` (Task 2) and the export endpoint (Task 5) — one function,
-two callers, exactly as the spec's §4.1 argued for. `RewriteSession.context`
-(Task 2) is read only by `resume()` (Task 3); nothing else touches it.
-`current_texts` as a wire field is `dict[str, str]` on the backend and
-`Record<string, string>` on the frontend throughout — no task introduces a
-different shape for the same concept.
+**Do the pieces fit together correctly?** `overlay_texts` (Task 1) is used
+by both `orchestrator.start` (Task 2) and the download address (Task 5) —
+one function, two places that need it, exactly as planned. The saved
+snapshot (Task 2) is only ever read by the "answer a question" function
+(Task 3) — nothing else touches it. The accepted-edits list is a simple
+`{id: text}` map on both the backend and the frontend the whole way through
+— no task quietly changes its shape.
 
-**The one thing worth double-checking in review:** Task 8 and Task 9 each
-leave `page.tsx` red under `tsc` on purpose, and Task 10 is what makes it
-green again. This mirrors how the ripples-to-notes work earlier in this
-project's history was sequenced, and it's deliberate here for the same
-reason — the compile error is the evidence that the new props are genuinely
-required, not optional additions nobody has to wire up.
+**One thing worth knowing before you start:** Tasks 8 and 9 deliberately
+leave the frontend showing type errors — on purpose. Task 10 is what makes
+those errors go away. This is the same pattern used earlier in this
+project: the error itself is proof that the new information is genuinely
+required, not just something nice to have that nobody actually has to wire
+up.
