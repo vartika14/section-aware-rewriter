@@ -6,11 +6,13 @@ export function SectionList({
   sections,
   headingsDetected,
   selectedId,
+  editedIds,
   onSelect,
 }: {
   sections: Section[];
   headingsDetected: boolean;
   selectedId: string | null;
+  editedIds: Set<string>;
   onSelect: (id: string) => void;
 }) {
   return (
@@ -18,6 +20,8 @@ export function SectionList({
       <h2 className="mb-1 font-semibold">2. Pick a section</h2>
       <p className="mb-4 text-sm text-slate-500">
         {sections.length} section{sections.length === 1 ? "" : "s"} found.
+        {editedIds.size > 0 &&
+          ` ${editedIds.size} edited.`}
       </p>
 
       {!headingsDetected && (
@@ -45,7 +49,14 @@ export function SectionList({
                 onChange={() => onSelect(section.id)}
               />
               <span className="min-w-0">
-                <span className="block font-medium">{section.heading}</span>
+                <span className="flex items-center gap-1.5 font-medium">
+                  {section.heading}
+                  {editedIds.has(section.id) && (
+                    <span className="text-emerald-600" title="Edited and accepted">
+                      ●
+                    </span>
+                  )}
+                </span>
                 <span className="block truncate text-sm text-slate-500">
                   {section.text || "(no body text)"}
                 </span>
