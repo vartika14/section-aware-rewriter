@@ -79,6 +79,7 @@ export async function rewriteSection(input: {
   documentId: string;
   sectionId: string;
   instruction: string;
+  currentTexts?: Record<string, string>;
 }): Promise<RewriteResult> {
   return unwrap<RewriteResult>(
     await fetch(`${API_BASE}/rewrite`, {
@@ -88,9 +89,35 @@ export async function rewriteSection(input: {
         document_id: input.documentId,
         section_id: input.sectionId,
         instruction: input.instruction,
+        current_texts: input.currentTexts ?? {},
       }),
     }),
   );
+}
+
+/**
+ * Downloads the finished document as a Blob (a file, not text). This
+ * endpoint sends back an actual file, so we don't use the usual unwrap()
+ * helper, which expects a JSON response.
+ */
+export async function exportDocument(input: {
+  documentId: string;
+  sections: Record<string, string>;
+}): Promise<Blob> {
+  const response = await fetch(`${API_BASE}/documents/${input.documentId}/export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sections: Object.entries(input.sections).map(([id, text]) => ({ id, text })),
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || `Export failed (${response.status})`);
+  }
+
+  return response.blob();
 }
 
 /** resume() on the backend cannot ask a second question — its return type has
