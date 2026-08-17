@@ -56,6 +56,7 @@ class RewriteRequest(BaseModel):
     document_id: str
     section_id: str
     instruction: str
+    current_texts: dict[str, str] = {}
 
     @field_validator("instruction")
     @classmethod
@@ -143,6 +144,7 @@ async def rewrite(request: RewriteRequest) -> RewriteResponse:
             request.document_id,
             section_id=request.section_id,
             instruction=request.instruction,
+            current_texts=request.current_texts,
         )
     except orchestrator.UnknownDocument as exc:
         raise HTTPException(

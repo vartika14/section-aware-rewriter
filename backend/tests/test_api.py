@@ -109,10 +109,14 @@ def blocking_conflict(**overrides) -> Conflict:
     )
 
 
-def rewrite(document_id: str, section_id: str = "s2", instruction: str = "Be concrete."):
-    return client.post("/rewrite", json={
-        "document_id": document_id, "section_id": section_id, "instruction": instruction,
-    })
+def rewrite(
+    document_id: str, section_id: str = "s2", instruction: str = "Be concrete.",
+    current_texts: dict | None = None,
+):
+    body = {"document_id": document_id, "section_id": section_id, "instruction": instruction}
+    if current_texts is not None:
+        body["current_texts"] = current_texts
+    return client.post("/rewrite", json=body)
 
 
 def test_rewrite_returns_the_new_text_alongside_the_old(document_id, fake_model):
@@ -371,3 +375,32 @@ def test_export_returns_a_clear_error_for_an_unknown_document():
 
     assert response.status_code == 404
     assert "document" in response.json()["detail"].lower()
+
+
+# --- accepted edits reach a new rewrite -------------------------------------
+
+
+def test_current_texts_reach_the_rewrite_prompt(document_id, monkeypatch):
+    captured = {}
+
+    def draft(**kwargs):
+        captured["user"] = kwargs["user"]
+        return kwargs["schema"](applicable=True, new_text=NEW_TEXT)
+
+    monkeypatch.setattr("app.rewrite.structured_completion", draft)
+    monkeypatch.setattr(
+        "app.conflicts.structured_completion", lambda **kw: kw["schema"](findings=[])
+    )
+
+    rewrite(
+        document_id, section_id="s2",
+        current_texts={"s3": "A renegotiated fee of EUR 90,000."},
+    )
+
+    assert "A renegotiated fee of EUR 90,000." in captured["user"]
+
+
+def test_a_rewrite_request_without_current_texts_still_works(document_id, fake_model):
+    response = rewrite(document_id)
+
+    assert response.status_code == 200
