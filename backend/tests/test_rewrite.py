@@ -8,7 +8,7 @@ check is ever run — a nonsensical instruction should never cost a DETECT call.
 import pytest
 
 from app.parsing import Section
-from app.rewrite import DraftResult, draft_section, find_section, render_document
+from app.rewrite import DraftResult, draft_section, find_section, overlay_texts, render_document
 
 SECTIONS = [
     Section(id="s1", heading="1. Executive Summary", text="Act on it this quarter."),
@@ -126,3 +126,33 @@ def test_no_constraints_leaves_the_prompt_as_it_was(monkeypatch):
     draft_section(sections=SECTIONS, section_id="s2", instruction="Make this concrete.")
 
     assert "must hold" not in seen["user"]
+
+
+# --- overlay_texts() -------------------------------------------------------
+
+
+def test_overlay_texts_replaces_matching_ids():
+    overlaid = overlay_texts(SECTIONS, {"s2": "A new, more concrete scope."})
+
+    assert [s.text for s in overlaid] == [
+        "Act on it this quarter.",
+        "A new, more concrete scope.",
+        "A fixed fee of EUR 48,000.",
+    ]
+
+
+def test_overlay_texts_leaves_ids_headings_and_order_untouched():
+    overlaid = overlay_texts(SECTIONS, {"s2": "A new, more concrete scope."})
+
+    assert [s.id for s in overlaid] == [s.id for s in SECTIONS]
+    assert [s.heading for s in overlaid] == [s.heading for s in SECTIONS]
+
+
+def test_overlay_texts_with_an_empty_map_changes_nothing():
+    assert overlay_texts(SECTIONS, {}) == SECTIONS
+
+
+def test_overlay_texts_ignores_an_id_that_matches_no_section():
+    """If the browser sends an old section id — say, from before a new file
+    was uploaded — this should just be ignored, not cause an error."""
+    assert overlay_texts(SECTIONS, {"s99": "orphaned"}) == SECTIONS

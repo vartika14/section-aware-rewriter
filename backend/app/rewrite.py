@@ -58,6 +58,21 @@ def find_section(sections: list[Section], section_id: str) -> Section:
     raise KeyError(section_id)
 
 
+def overlay_texts(sections: list[Section], current_texts: dict[str, str]) -> list[Section]:
+    """Swap in the text the author has already accepted for a section, if
+    there is any. The id, heading, and position of each section never
+    change — only the text.
+
+    Used in two places: when starting a new rewrite (so it can see edits
+    already accepted for other sections), and when building the file to
+    download (so the file matches what the author actually kept).
+    """
+    return [
+        s.model_copy(update={"text": current_texts[s.id]}) if s.id in current_texts else s
+        for s in sections
+    ]
+
+
 def draft_section(
     *,
     sections: list[Section],
