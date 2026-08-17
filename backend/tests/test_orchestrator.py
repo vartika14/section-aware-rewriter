@@ -89,3 +89,92 @@ def test_an_unknown_document_is_not_a_crash(model):
 def test_an_unknown_section_is_not_a_crash(document_id, model):
     with pytest.raises(orchestrator.UnknownSection):
         orchestrator.start(document_id, section_id="s99", instruction="x")
+
+
+from app.question import Branch  # noqa: E402
+
+
+def asked(document_id: str) -> orchestrator.Asking:
+    outcome = orchestrator.start(document_id, section_id="s2", instruction="Be concrete.")
+    assert isinstance(outcome, orchestrator.Asking)
+    return outcome
+
+
+@pytest.fixture
+def blocking_model(model):
+    model["conflicts"] = [
+        Conflict(section_id="s4", quote="A fixed fee of EUR 48,000",
+                 explanation="Priced against the old scope.", blocking=True)
+    ]
+    return model
+
+
+def test_holding_produces_a_second_draft(document_id, blocking_model):
+    a = asked(document_id)
+    blocking_model["new_text"] = "second draft"
+    blocking_model["conflicts"] = []   # the re-check finds nothing new
+
+    outcome = orchestrator.resume(a.session_id, option_key="a")
+
+    assert isinstance(outcome, orchestrator.Completed)
+    assert outcome.new_text == "second draft"
+
+
+def test_holding_reports_what_the_recheck_finds_as_a_note_never_a_second_question(
+    document_id, blocking_model
+):
+    a = asked(document_id)
+    blocking_model["conflicts"] = [
+        Conflict(section_id="s1", quote="A recommendation within the quarter",
+                 explanation="No longer supported by the trimmed scope.", blocking=True)
+    ]
+
+    outcome = orchestrator.resume(a.session_id, option_key="a")
+
+    assert isinstance(outcome, orchestrator.Completed)  # never Asking — the type already forbids it
+    assert "s1" in [n.section_id for n in outcome.notes]
+
+
+def test_flagging_returns_the_stored_draft_and_keeps_the_finding_as_a_note(document_id, blocking_model):
+    a = asked(document_id)
+    outcome = orchestrator.resume(a.session_id, option_key="b")
+
+    assert outcome.new_text == "drafted"   # the FIRST draft, untouched
+    assert "s4" in [n.section_id for n in outcome.notes]
+
+
+def test_flagging_calls_the_model_not_at_all(document_id, blocking_model, monkeypatch):
+    a = asked(document_id)
+    calls = []
+    monkeypatch.setattr("app.rewrite.structured_completion", lambda **kw: calls.append(1))
+
+    orchestrator.resume(a.session_id, option_key="b")
+
+    assert calls == []
+
+
+def test_accepting_returns_the_stored_draft_and_drops_the_finding(document_id, blocking_model):
+    a = asked(document_id)
+    outcome = orchestrator.resume(a.session_id, option_key="c")
+
+    assert outcome.new_text == "drafted"
+    assert outcome.notes == []
+
+
+def test_a_finished_session_cannot_be_answered_again(document_id, blocking_model):
+    a = asked(document_id)
+    orchestrator.resume(a.session_id, option_key="c")
+
+    with pytest.raises(orchestrator.SessionFinished):
+        orchestrator.resume(a.session_id, option_key="c")
+
+
+def test_an_unknown_session_is_not_a_crash(blocking_model):
+    with pytest.raises(orchestrator.UnknownSession):
+        orchestrator.resume("nope", option_key="a")
+
+
+def test_an_unrecognised_option_is_rejected(document_id, blocking_model):
+    a = asked(document_id)
+    with pytest.raises(ValueError):
+        orchestrator.resume(a.session_id, option_key="z")

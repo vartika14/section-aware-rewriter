@@ -6,8 +6,8 @@ what makes "at most one question, ever" a property of the type checker.
 from pydantic import BaseModel
 
 from . import store
-from .conflicts import Note, decide, find_conflicts
-from .question import Question, compose_question
+from .conflicts import Conflict, Note, decide, find_conflicts, ground, to_notes
+from .question import Branch, Question, compose_question
 from .rewrite import draft_section, find_section
 
 
@@ -89,3 +89,60 @@ def start(document_id: str, *, section_id: str, instruction: str) -> Outcome:
         )
     )
     return Asking(session_id=session_id, section_id=section.id, question=question)
+
+
+def hold_constraint(conflicts: list[Conflict], heading: str) -> str:
+    """What a second draft is held to when the author says "hold that section".
+
+    Built here, not asked of the model, so what the redraft must honour is a
+    string this file's tests can read.
+    """
+    quotes = " ".join(f'It says "{c.quote}".' for c in conflicts)
+    return f"{heading} must stand exactly as written. {quotes} Do not contradict it."
+
+
+def resume(session_id: str, *, option_key: str) -> Completed | Declined:
+    """Only branch (a) needs new text. (b) and (c) are the author approving the
+    draft they were shown — returning to the model there would risk handing
+    back different text than the one they just accepted.
+
+    Note the return type: no `Asking` arm. Whatever branch (a)'s re-check finds
+    becomes a note on the result, never a second question — that guarantee is
+    readable from this signature, not from a counter anywhere in the body.
+    """
+    session = store.get_session(session_id)
+    if session is None:
+        raise UnknownSession(session_id)
+    if session.resolved:
+        raise SessionFinished(session_id)
+
+    document = store.get_document(session.document_id)
+    if document is None:
+        raise UnknownDocument(session.document_id)
+
+    branch = Branch(option_key)  # ValueError on anything else, by design
+    by_id = {s.id: s for s in document.sections}
+    heading = by_id[session.asking[0].section_id].heading
+
+    if branch is Branch.HOLD:
+        draft = draft_section(
+            sections=document.sections, section_id=session.section_id,
+            instruction=session.instruction,
+            constraints=[hold_constraint(session.asking, heading)],
+        )
+        found = find_conflicts(
+            sections=document.sections, section_id=session.section_id,
+            instruction=session.instruction, new_text=draft.new_text,
+        )
+        grounded = ground(found, by_id, rewritten_id=session.section_id)
+        notes = session.notes + to_notes(found, grounded, by_id)
+        new_text = draft.new_text
+    else:
+        new_text = session.draft_text
+        notes = session.notes + (
+            to_notes(session.asking, session.asking, by_id) if branch is Branch.FLAG else []
+        )
+
+    session.resolved = True
+    section = find_section(document.sections, session.section_id)
+    return Completed(section_id=section.id, old_text=section.text, new_text=new_text, notes=notes)
