@@ -110,13 +110,16 @@ def hold_constraint(conflicts: list[Conflict], heading: str) -> str:
 
 
 def resume(session_id: str, *, option_key: str) -> Completed | Declined:
-    """Only branch (a) needs new text. (b) and (c) are the author approving the
-    draft they were shown — returning to the model there would risk handing
-    back different text than the one they just accepted.
+    """Answer a paused question.
 
-    Note the return type: no `Asking` arm. Whatever branch (a)'s re-check finds
-    becomes a note on the result, never a second question — that guarantee is
-    readable from this signature, not from a counter anywhere in the body.
+    Only one of the three answers ("hold the other section") needs a new
+    rewrite. The other two mean "go ahead with what I was already shown" — so
+    going back to the model there would risk handing back different text than
+    what the author actually agreed to.
+
+    This function can only return a finished result or a "declined" — never a
+    second question. That's not a rule we remember to follow; it's built into
+    what this function is allowed to return.
     """
     session = store.get_session(session_id)
     if session is None:
@@ -124,22 +127,26 @@ def resume(session_id: str, *, option_key: str) -> Completed | Declined:
     if session.resolved:
         raise SessionFinished(session_id)
 
+    # We still check the document itself hasn't disappeared (say, from a
+    # server restart) — that check doesn't change. What changes is that we no
+    # longer use this document's sections for anything else below; we use the
+    # frozen snapshot instead.
     document = store.get_document(session.document_id)
     if document is None:
         raise UnknownDocument(session.document_id)
 
-    branch = Branch(option_key)  # ValueError on anything else, by design
-    by_id = {s.id: s for s in document.sections}
+    branch = Branch(option_key)  # raises a clear error on anything else
+    by_id = {s.id: s for s in session.context}
     heading = by_id[session.asking[0].section_id].heading
 
     if branch is Branch.HOLD:
         draft = draft_section(
-            sections=document.sections, section_id=session.section_id,
+            sections=session.context, section_id=session.section_id,
             instruction=session.instruction,
             constraints=[hold_constraint(session.asking, heading)],
         )
         found = find_conflicts(
-            sections=document.sections, section_id=session.section_id,
+            sections=session.context, section_id=session.section_id,
             instruction=session.instruction, new_text=draft.new_text,
         )
         grounded = ground(found, by_id, rewritten_id=session.section_id)
@@ -152,5 +159,5 @@ def resume(session_id: str, *, option_key: str) -> Completed | Declined:
         )
 
     session.resolved = True
-    section = find_section(document.sections, session.section_id)
+    section = find_section(session.context, session.section_id)
     return Completed(section_id=section.id, old_text=section.text, new_text=new_text, notes=notes)

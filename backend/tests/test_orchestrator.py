@@ -166,6 +166,44 @@ def blocking_model(model):
     return model
 
 
+def test_answering_a_question_uses_the_saved_snapshot_not_the_live_document(
+    document_id, model, monkeypatch
+):
+    """We build a "paused" session by hand here, with a snapshot that
+    deliberately says something different from the real document. If
+    answering the question uses the snapshot (correct), the fake number shows
+    up. If it re-reads the real document instead (wrong), the real number
+    shows up."""
+    frozen_snapshot = [
+        Section(id="s1", heading="1. Executive Summary", text="A recommendation within the quarter."),
+        Section(id="s2", heading="2. Scope of Work", text="The engagement is advisory."),
+        Section(id="s4", heading="4. Fees and Payment",
+                text="A fixed fee of EUR 999,000, frozen at ask time."),
+    ]
+    session_id = store.save_session(
+        store.RewriteSession(
+            document_id=document_id, section_id="s2", instruction="Be concrete.",
+            draft_text="drafted", context=frozen_snapshot,
+            asking=[Conflict(section_id="s4", quote="A fixed fee of EUR 999,000, frozen at ask time.",
+                              explanation="test", blocking=True)],
+            notes=[],
+        )
+    )
+
+    captured = {}
+
+    def draft(**kwargs):
+        captured["user"] = kwargs["user"]
+        return kwargs["schema"](applicable=True, new_text="second draft")
+
+    monkeypatch.setattr("app.rewrite.structured_completion", draft)
+
+    orchestrator.resume(session_id, option_key="a")
+
+    assert "A fixed fee of EUR 999,000, frozen at ask time." in captured["user"]
+    assert "A fixed fee of EUR 48,000 covers it." not in captured["user"]
+
+
 def test_holding_produces_a_second_draft(document_id, blocking_model):
     a = asked(document_id)
     blocking_model["new_text"] = "second draft"
