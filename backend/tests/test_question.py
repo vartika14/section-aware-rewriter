@@ -9,9 +9,8 @@ the consultant still reads a sentence rather than a template.
 
 import pytest
 
-from app.audit import Finding
+from app.conflicts import Conflict
 from app.parsing import Section
-from app.policy import FindingGroup
 from app.question import Branch, Option, Question, build_options, compose_question
 
 SECTIONS = [
@@ -24,22 +23,18 @@ SECTIONS = [
     ),
 ]
 
+HEADING = "4. Fees and Payment"
 
-def group(*findings: Finding) -> FindingGroup:
-    return FindingGroup(
-        section_id="s4",
-        heading="4. Fees and Payment",
-        findings=list(findings)
-        or [
-            Finding(
-                section_id="s4",
-                quote="A fixed fee of EUR 48,000",
-                kind="invalidated_premise",
-                explanation="The fee was priced against the old, vaguer scope.",
-                resolvable_from_document=False,
-            )
-        ],
-    )
+
+def conflicts(*items: Conflict) -> list[Conflict]:
+    return list(items) or [
+        Conflict(
+            section_id="s4",
+            quote="A fixed fee of EUR 48,000",
+            explanation="The fee was priced against the old, vaguer scope.",
+            blocking=True,
+        )
+    ]
 
 
 def no_model(*, system, user, schema, **kwargs):
@@ -50,20 +45,20 @@ def no_model(*, system, user, schema, **kwargs):
 
 
 def test_the_branches_are_the_three_ways_out_of_a_conflict():
-    options = build_options(group())
+    options = build_options(conflicts(), heading=HEADING)
 
     assert [option.key for option in options] == ["a", "b", "c"]
 
 
 def test_every_branch_names_the_section_it_would_affect():
     """A branch a consultant cannot act on is not a branch."""
-    for option in build_options(group()):
+    for option in build_options(conflicts(), heading=HEADING):
         assert "4. Fees and Payment" in option.label
 
 
 def test_the_branches_do_not_depend_on_the_model_being_reachable():
-    options = build_options(group())
-    again = build_options(group())
+    options = build_options(conflicts(), heading=HEADING)
+    again = build_options(conflicts(), heading=HEADING)
 
     assert options == again
 
@@ -72,14 +67,14 @@ def test_the_branches_do_not_depend_on_the_model_being_reachable():
 
 
 def test_each_branch_key_has_a_name_the_resume_path_can_switch_on():
-    """`loop.py` must not switch on a bare "a". The meaning lives in one place."""
+    """`orchestrator.py` must not switch on a bare "a". The meaning lives in one place."""
     assert Branch.HOLD.value == "a"
     assert Branch.FLAG.value == "b"
     assert Branch.ACCEPT.value == "c"
 
 
 def test_the_branch_keys_and_the_rendered_options_cannot_drift_apart():
-    assert [option.key for option in build_options(group())] == [
+    assert [option.key for option in build_options(conflicts(), heading=HEADING)] == [
         branch.value for branch in Branch
     ]
 
@@ -101,13 +96,14 @@ def test_the_phrasing_call_is_told_what_the_author_asked_for(monkeypatch):
         seen["user"] = user
         return Question(
             text='It says "A fixed fee of EUR 48,000". Which way?',
-            options=build_options(group()),
+            options=build_options(conflicts(), heading=HEADING),
         )
 
     monkeypatch.setattr("app.question.structured_completion", capture)
 
     compose_question(
-        group(),
+        conflicts(),
+        heading=HEADING,
         sections=SECTIONS,
         instruction="Make this concrete. Name the deliverables.",
     )
@@ -124,37 +120,32 @@ def test_the_question_quotes_the_clause_it_is_worried_about(monkeypatch):
     monkeypatch.setattr("app.question.structured_completion", no_model)
 
     question = compose_question(
-        group(), sections=SECTIONS, instruction="Name the deliverables.", polish=False
+        conflicts(), heading=HEADING, sections=SECTIONS,
+        instruction="Name the deliverables.", polish=False,
     )
 
     assert "A fixed fee of EUR 48,000" in question.text
 
 
-def test_the_question_covers_every_finding_in_the_group(monkeypatch):
+def test_the_question_covers_every_conflict_in_the_group(monkeypatch):
     """Two consequences on one clause are one question, but the human still has
     to be told about both of them."""
     monkeypatch.setattr("app.question.structured_completion", no_model)
 
     question = compose_question(
-        group(
-            Finding(
-                section_id="s4",
-                quote="A fixed fee of EUR 48,000",
-                kind="invalidated_premise",
-                explanation="The fee was priced against the old scope.",
-                resolvable_from_document=False,
+        conflicts(
+            Conflict(
+                section_id="s4", quote="A fixed fee of EUR 48,000",
+                explanation="The fee was priced against the old scope.", blocking=True,
             ),
-            Finding(
-                section_id="s4",
-                quote="covers the engagement in full",
-                kind="contradiction",
+            Conflict(
+                section_id="s4", quote="covers the engagement in full",
                 explanation="The rewrite adds work beyond the original engagement.",
-                resolvable_from_document=False,
+                blocking=True,
             ),
         ),
-        sections=SECTIONS,
-        instruction="Name the deliverables.",
-        polish=False,
+        heading=HEADING, sections=SECTIONS,
+        instruction="Name the deliverables.", polish=False,
     )
 
     assert "priced against the old scope" in question.text
@@ -165,7 +156,8 @@ def test_the_question_does_not_merely_re_ask_the_instruction(monkeypatch):
     monkeypatch.setattr("app.question.structured_completion", no_model)
 
     question = compose_question(
-        group(), sections=SECTIONS, instruction="Name the deliverables.", polish=False
+        conflicts(), heading=HEADING, sections=SECTIONS,
+        instruction="Name the deliverables.", polish=False,
     )
 
     assert "name the deliverables" not in question.text.lower()
@@ -189,7 +181,7 @@ def test_polished_wording_is_used_when_it_keeps_the_branches(monkeypatch):
     monkeypatch.setattr("app.question.structured_completion", polish)
 
     question = compose_question(
-        group(), sections=SECTIONS, instruction="Name the deliverables."
+        conflicts(), heading=HEADING, sections=SECTIONS, instruction="Name the deliverables."
     )
 
     assert question.text.startswith("4. Fees and Payment commits to")
@@ -212,7 +204,7 @@ def test_wording_that_renumbers_the_branches_is_discarded(monkeypatch):
     monkeypatch.setattr("app.question.structured_completion", rogue)
 
     question = compose_question(
-        group(), sections=SECTIONS, instruction="Name the deliverables."
+        conflicts(), heading=HEADING, sections=SECTIONS, instruction="Name the deliverables."
     )
 
     assert [option.key for option in question.options] == ["a", "b", "c"]
@@ -229,13 +221,13 @@ def test_wording_that_drops_the_quote_is_discarded(monkeypatch):
         return schema(
             text="The rewrite makes section 5's reference slightly outdated. "
             "How would you like to handle this inconsistency?",
-            options=build_options(group()),
+            options=build_options(conflicts(), heading=HEADING),
         )
 
     monkeypatch.setattr("app.question.structured_completion", unquoted)
 
     question = compose_question(
-        group(), sections=SECTIONS, instruction="Name the deliverables."
+        conflicts(), heading=HEADING, sections=SECTIONS, instruction="Name the deliverables."
     )
 
     assert "A fixed fee of EUR 48,000" in question.text
@@ -249,30 +241,23 @@ def test_wording_is_kept_when_it_preserves_any_one_quote(monkeypatch):
         return schema(
             text='Section 4 commits to "A fixed fee of EUR 48,000" priced '
             "against the scope you are changing. How should I proceed?",
-            options=build_options(group()),
+            options=build_options(conflicts(), heading=HEADING),
         )
 
     monkeypatch.setattr("app.question.structured_completion", partial)
 
     question = compose_question(
-        group(
-            Finding(
-                section_id="s4",
-                quote="A fixed fee of EUR 48,000",
-                kind="invalidated_premise",
-                explanation="Priced against the old scope.",
-                resolvable_from_document=False,
+        conflicts(
+            Conflict(
+                section_id="s4", quote="A fixed fee of EUR 48,000",
+                explanation="Priced against the old scope.", blocking=True,
             ),
-            Finding(
-                section_id="s4",
-                quote="covers the engagement in full",
-                kind="contradiction",
-                explanation="The rewrite adds work.",
-                resolvable_from_document=False,
+            Conflict(
+                section_id="s4", quote="covers the engagement in full",
+                explanation="The rewrite adds work.", blocking=True,
             ),
         ),
-        sections=SECTIONS,
-        instruction="Name the deliverables.",
+        heading=HEADING, sections=SECTIONS, instruction="Name the deliverables.",
     )
 
     assert question.text.startswith("Section 4 commits to")
@@ -287,7 +272,7 @@ def test_a_model_failure_falls_back_to_the_deterministic_question(monkeypatch):
     monkeypatch.setattr("app.question.structured_completion", explode)
 
     question = compose_question(
-        group(), sections=SECTIONS, instruction="Name the deliverables."
+        conflicts(), heading=HEADING, sections=SECTIONS, instruction="Name the deliverables."
     )
 
     assert "A fixed fee of EUR 48,000" in question.text

@@ -13,9 +13,9 @@ from enum import Enum
 
 from pydantic import BaseModel
 
+from .conflicts import Conflict
 from .llm import structured_completion
 from .parsing import Section
-from .policy import FindingGroup
 from .text import normalize
 
 SYSTEM = """You rephrase a clarifying question that an editing tool is about to
@@ -39,7 +39,7 @@ Hard constraints:
 class Branch(str, Enum):
     """What each lettered option actually means.
 
-    The key is what crosses the wire; the name is what `loop.py` switches on.
+    The key is what crosses the wire; the name is what `orchestrator.py` switches on.
     Keeping both in one place is the difference between a branch whose meaning is
     checkable and one that lives inside a label string nobody parses.
     """
@@ -71,26 +71,25 @@ class Question(BaseModel):
     options: list[Option]
 
 
-def build_options(group: FindingGroup) -> list[Option]:
+def build_options(conflicts: list[Conflict], *, heading: str) -> list[Option]:
     """The branches, derived from the group with no model involved."""
     return [
-        Option(key=branch.value, label=template.format(heading=group.heading))
+        Option(key=branch.value, label=template.format(heading=heading))
         for branch, template in BRANCHES
     ]
 
 
-def template_text(group: FindingGroup) -> str:
+def template_text(conflicts: list[Conflict], *, heading: str) -> str:
     """The question as Python alone would put it: correct, complete, a bit stiff.
 
     This is also the fallback, so it has to stand on its own — it names the
     section, quotes the exact clause, and gives the consequence for each finding.
     """
     clauses = " ".join(
-        f'It says "{finding.quote}". {finding.explanation}'
-        for finding in group.findings
+        f'It says "{c.quote}". {c.explanation}' for c in conflicts
     )
     return (
-        f"This rewrite affects {group.heading}. {clauses} "
+        f"This rewrite affects {heading}. {clauses} "
         f"Only you can settle this. How should I proceed?"
     )
 
@@ -101,7 +100,7 @@ def _kept_the_branches(polished: Question, options: list[Option]) -> bool:
     ]
 
 
-def _kept_a_quote(polished: Question, group: FindingGroup) -> bool:
+def _kept_a_quote(polished: Question, conflicts: list[Conflict]) -> bool:
     """At least one clause must survive the rewording verbatim.
 
     Quoting the exact words is what separates a question a consultant can act on
@@ -109,32 +108,33 @@ def _kept_a_quote(polished: Question, group: FindingGroup) -> bool:
     finding to lead with, but not to drop the evidence entirely.
     """
     text = normalize(polished.text)
-    return any(normalize(finding.quote) in text for finding in group.findings)
+    return any(normalize(c.quote) in text for c in conflicts)
 
 
 def compose_question(
-    group: FindingGroup,
+    conflicts: list[Conflict],
     *,
+    heading: str,
     sections: list[Section],
     instruction: str,
     polish: bool = True,
 ) -> Question:
-    """Build the question for one group of findings.
+    """Build the question for one group of conflicts, all against `heading`.
 
     `polish=False` skips the model entirely — used by tests, and the honest
     behaviour if the phrasing call ever needs to be switched off.
     """
-    options = build_options(group)
-    deterministic = Question(text=template_text(group), options=options)
+    options = build_options(conflicts, heading=heading)
+    deterministic = Question(text=template_text(conflicts, heading=heading), options=options)
 
     if not polish:
         return deterministic
 
-    conflicting = next((s for s in sections if s.id == group.section_id), None)
+    conflicting_section = next((s for s in sections if s.id == conflicts[0].section_id), None)
     user = (
         f"The author asked for this rewrite: {instruction}\n\n"
-        f"It has a consequence for {group.heading}, which currently reads:\n\n"
-        f"{conflicting.text if conflicting else ''}\n\n"
+        f"It has a consequence for {heading}, which currently reads:\n\n"
+        f"{conflicting_section.text if conflicting_section else ''}\n\n"
         f"---\n\nDrafted question: {deterministic.text}\n\n"
         + "\n".join(f"({o.key}) {o.label}" for o in options)
     )
@@ -151,7 +151,7 @@ def compose_question(
     if (
         not polished.text.strip()
         or not _kept_the_branches(polished, options)
-        or not _kept_a_quote(polished, group)
+        or not _kept_a_quote(polished, conflicts)
     ):
         return deterministic
     return polished
