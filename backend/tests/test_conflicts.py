@@ -201,3 +201,23 @@ def test_only_the_first_blocking_section_is_asked_about_the_rest_become_notes():
 def test_a_conflict_against_the_rewritten_section_never_blocks():
     decision = decide([conflict(section_id="s2")], SECTIONS, rewritten_id="s2")
     assert decision.action == "complete"
+
+
+def test_a_conflict_against_the_rewritten_section_is_not_shown_as_a_note_either():
+    """The model comparing a section's old text to its own new text isn't a
+    conflict with another section — it's just the rewrite. It must not reach
+    the user at all, not even as a note, the same way ground() already keeps
+    it out of the blocking candidates."""
+    decision = decide([conflict(section_id="s2")], SECTIONS, rewritten_id="s2")
+    assert decision.notes == []
+
+
+def test_a_conflict_against_the_rewritten_section_stays_out_of_notes_on_the_ask_path_too():
+    """Same rule, but this time there's a real, different blocking conflict in
+    the same batch — the self-reference must not sneak into the notes that
+    accompany the question."""
+    decision = decide(
+        [conflict(), conflict(section_id="s2")], SECTIONS, rewritten_id="s2"
+    )
+    assert decision.action == "ask"
+    assert "s2" not in [n.section_id for n in decision.notes]

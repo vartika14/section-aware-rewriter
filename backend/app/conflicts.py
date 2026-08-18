@@ -173,6 +173,13 @@ def decide(conflicts: list[Conflict], sections: list[Section], rewritten_id: str
     no counter: there is only ever one group to ask about, by construction.
     """
     by_id = {s.id: s for s in sections}
+    # A finding against the section being rewritten isn't a conflict with
+    # another section at all — it's just the rewrite. Drop it here, before it
+    # can leak into a note or a question, not only from the blocking check.
+    # ground() also excludes it further down, kept as a second, independent
+    # check so ground() stays correct on its own if anything ever calls it
+    # without this filter applied first.
+    conflicts = [c for c in conflicts if c.section_id != rewritten_id]
     grounded = ground(conflicts, by_id, rewritten_id)
     blocking = [c for c in grounded if c.blocking]
 

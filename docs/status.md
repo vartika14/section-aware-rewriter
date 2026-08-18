@@ -153,6 +153,20 @@ all three sample documents, not from reasoning about it.
   reliable across three fresh runs, with no regression on either a
   content-supplied instruction or a genuinely uncontroversial one, checked the
   same way.
+- **A section could flag itself as a note.** `ground()` correctly stops a
+  finding against the section being rewritten from ever becoming a question —
+  its own docstring says so — but `decide()` built its *notes* from the raw,
+  unfiltered finding list, not the grounded one. So a finding comparing a
+  section's old text to its own new text (not a real cross-section conflict at
+  all) could still show up as a note next to the very text that replaced it.
+  Found live, on the multi-section-chain test document, rewriting the fee
+  section: the old fee text showed up "affecting" the fee section itself. The
+  existing test for this only checked that self-reference never blocked; it
+  never checked notes, which is exactly the gap that let this through. Fixed
+  by filtering self-references out once, at the top of `decide()`, before
+  either outcome path runs — confirmed clean across 5 live runs, with a
+  legitimate cross-section finding (the executive summary genuinely affected
+  by the same edit) still coming through correctly on a 6th.
 
 ## How to test
 
