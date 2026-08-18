@@ -71,6 +71,11 @@ export default function Home() {
       .map((s) => s.id),
   );
 
+  // A question that's still waiting for an answer must not be walkable-away-
+  // from: no re-typing a new instruction, no jumping to a different section.
+  // Both would silently abandon the paused question instead of answering it.
+  const awaitingAnswer = result?.status === "needs_clarification";
+
   return (
     <main className="mx-auto max-w-6xl space-y-6 p-8">
       <header>
@@ -109,6 +114,7 @@ export default function Home() {
                 headingsDetected={document.headings_detected}
                 selectedId={selectedId}
                 editedIds={editedIds}
+                locked={awaitingAnswer}
                 onSelect={(id) => {
                   setSelectedId(id);
                   setResult(null);
@@ -136,6 +142,7 @@ export default function Home() {
             <InstructionPanel
               section={selected}
               busy={busy}
+              locked={awaitingAnswer}
               onSubmit={handleInstruction}
             />
           )}

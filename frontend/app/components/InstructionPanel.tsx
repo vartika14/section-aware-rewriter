@@ -10,16 +10,24 @@ function wordCount(text: string): number {
 export function InstructionPanel({
   section,
   busy,
+  locked,
   onSubmit,
 }: {
   section: Section;
   busy: boolean;
+  /** True while a question from an earlier rewrite is still waiting for an
+   *  answer. Separate from `busy`: `busy` means "a request is running right
+   *  now," `locked` means "you need to answer the question first." Keeping
+   *  them apart means the button never wrongly says "Rewriting…" when
+   *  nothing is actually running — it's just waiting on you. */
+  locked?: boolean;
   onSubmit: (instruction: string) => void;
 }) {
   const [instruction, setInstruction] = useState("");
+  const disabled = busy || locked;
 
   function submit() {
-    if (instruction.trim() && !busy) onSubmit(instruction.trim());
+    if (instruction.trim() && !disabled) onSubmit(instruction.trim());
   }
 
   return (
@@ -55,7 +63,7 @@ export function InstructionPanel({
         id="instruction"
         rows={3}
         value={instruction}
-        disabled={busy}
+        disabled={disabled}
         onChange={(e) => setInstruction(e.target.value)}
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -72,13 +80,17 @@ export function InstructionPanel({
       <div className="mt-3 flex items-center gap-3">
         <button
           type="submit"
-          disabled={busy || !instruction.trim()}
+          disabled={disabled || !instruction.trim()}
           className="rounded-md bg-slate-800 px-4 py-2 text-sm font-medium
                      text-white hover:bg-slate-700 disabled:opacity-40"
         >
           {busy ? "Rewriting…" : "Rewrite section"}
         </button>
-        <span className="text-xs text-slate-400">⌘↵ to submit</span>
+        {locked ? (
+          <span className="text-xs text-amber-700">Answer the question first.</span>
+        ) : (
+          <span className="text-xs text-slate-400">⌘↵ to submit</span>
+        )}
       </div>
     </form>
   );

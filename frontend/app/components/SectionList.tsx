@@ -7,12 +7,18 @@ export function SectionList({
   headingsDetected,
   selectedId,
   editedIds,
+  locked,
   onSelect,
 }: {
   sections: Section[];
   headingsDetected: boolean;
   selectedId: string | null;
   editedIds: Set<string>;
+  /** True while an earlier rewrite's question is still waiting for an
+   *  answer. Switching sections mid-question would silently abandon that
+   *  question, so picking a different section is turned off until it's
+   *  answered. */
+  locked?: boolean;
   onSelect: (id: string) => void;
 }) {
   return (
@@ -23,6 +29,12 @@ export function SectionList({
         {editedIds.size > 0 &&
           ` ${editedIds.size} edited.`}
       </p>
+
+      {locked && (
+        <p className="mb-4 rounded-md bg-amber-50 p-3 text-sm text-amber-800">
+          Answer the question on the right before picking a different section.
+        </p>
+      )}
 
       {!headingsDetected && (
         <p className="mb-4 rounded-md bg-amber-50 p-3 text-sm text-amber-800">
@@ -35,7 +47,9 @@ export function SectionList({
         {sections.map((section) => (
           <li key={section.id}>
             <label
-              className={`flex cursor-pointer gap-3 rounded-md border p-3 ${
+              className={`flex gap-3 rounded-md border p-3 ${
+                locked ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+              } ${
                 selectedId === section.id
                   ? "border-slate-800 bg-slate-50"
                   : "border-slate-200 hover:bg-slate-50"
@@ -46,6 +60,7 @@ export function SectionList({
                 name="section"
                 className="mt-1"
                 checked={selectedId === section.id}
+                disabled={locked}
                 onChange={() => onSelect(section.id)}
               />
               <span className="min-w-0">
