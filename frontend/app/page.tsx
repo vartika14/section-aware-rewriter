@@ -57,6 +57,15 @@ export default function Home() {
     await run(() => answerQuestion({ sessionId, optionKey }));
   }
 
+  // Steps back from a pending question with none of it applied — the paused
+  // session on the backend is just left unanswered. Clearing the result also
+  // unlocks the instruction box and the section list, since both are locked
+  // by "is a question currently showing," not by anything else.
+  function handleCancel() {
+    setResult(null);
+    setError(null);
+  }
+
   // Clicking Accept is the only thing that keeps a rewrite. Re-running a
   // rewrite you don't like, without clicking Accept, never overwrites
   // something you already kept.
@@ -156,6 +165,7 @@ export default function Home() {
               result={result}
               busy={busy}
               onAnswer={(optionKey) => handleAnswer(result.session_id, optionKey)}
+              onCancel={handleCancel}
             />
           )}
 

@@ -12,10 +12,17 @@ export function QuestionPanel({
   result,
   busy,
   onAnswer,
+  onCancel,
 }: {
   result: RewriteNeedsClarification;
   busy: boolean;
   onAnswer: (optionKey: string) => void;
+  /** Steps back from the question entirely — none of the three answers fit,
+   *  the author wants to change what they asked for instead. Nothing is
+   *  undone on the server, because nothing was ever applied; the paused
+   *  question is simply left unanswered, the same as if the author had
+   *  never come back to it. */
+  onCancel: () => void;
 }) {
   return (
     <div className="rounded-lg border border-amber-300 bg-amber-50 p-6">
@@ -44,6 +51,21 @@ export function QuestionPanel({
           </button>
         ))}
       </div>
+
+      {/* Deliberately styled apart from the three answers above — this isn't
+          a fourth way to resolve the conflict, it's stepping back from the
+          question to change the instruction instead. */}
+      <button
+        type="button"
+        disabled={busy}
+        onClick={onCancel}
+        className="mt-3 w-full rounded-md border border-dashed border-slate-300
+                   bg-transparent px-3 py-2 text-sm text-slate-500
+                   hover:border-slate-400 hover:bg-slate-50 hover:text-slate-700
+                   disabled:opacity-50"
+      >
+        Cancel — let me change my instruction instead
+      </button>
 
       {busy && <p className="mt-4 text-xs text-amber-800">Applying your answer…</p>}
     </div>
