@@ -134,6 +134,25 @@ all three sample documents, not from reasoning about it.
   in state the simplified design doesn't have any more (a second round to
   manage). Worth saying in the session: a green suite is evidence about the
   paths it covers, nothing more.
+- **DRAFT could invent a fact it was never given.** Found by manual testing,
+  not by a unit test: asked to "add the name of the account manager" on a
+  section where no account manager is named anywhere in the document, it
+  wrote in "Jane Doe" — a fabricated name, silently inserted, no different in
+  kind from any other silent inconsistency this tool exists to catch. The
+  existing `applicable` check only asked "does this topic belong in this
+  section," never "do I actually have this fact or am I making it up." Fixed
+  with one more rule in `rewrite.py`'s system prompt: an instruction that
+  hands over the content to add (*"add a fourth deliverable: a
+  change-management plan"*) is fine to write; one that asks for a specific
+  real fact — a name, a number, a date — that isn't supplied and doesn't
+  appear anywhere else in the document must decline rather than invent one. A
+  first, softer wording of this rule did not change the model's behavior at
+  all — confirmed by re-running the exact failing case, not assumed fixed
+  after editing the prompt. A second, more direct wording (naming the
+  fabrication risk explicitly, with matched examples) fixed it, confirmed
+  reliable across three fresh runs, with no regression on either a
+  content-supplied instruction or a genuinely uncontroversial one, checked the
+  same way.
 
 ## How to test
 

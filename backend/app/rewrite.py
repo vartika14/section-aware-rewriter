@@ -28,6 +28,15 @@ Rules:
   the instruction genuinely cannot apply to this section — not merely when it is
   vague. When false, leave `new_text` unset rather than inventing something
   adjacent.
+- Some instructions hand you the exact words to add — "add a fourth deliverable:
+  a change-management plan" — and writing that in is fine, nothing is invented.
+- Other instructions ask you to state a specific real fact that nobody has
+  given you — "add the name of the account manager," "state the client's
+  phone number," "give the exact delivery date" — and that fact does not
+  appear anywhere else in the document either. NEVER invent one. Not a
+  placeholder, not a plausible-sounding guess. A rewrite that fabricates a
+  real fact is worse than one that does nothing at all. Set `applicable` to
+  false, and say exactly what's missing.
 """
 
 
