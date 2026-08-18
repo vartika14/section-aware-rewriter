@@ -215,6 +215,23 @@ def test_holding_produces_a_second_draft(document_id, blocking_model):
     assert outcome.new_text == "second draft"
 
 
+def test_holding_never_lets_the_rewritten_section_flag_itself_in_notes(
+    document_id, blocking_model
+):
+    """resume()'s HOLD branch calls find_conflicts() fresh and builds its own
+    notes directly — it doesn't go through decide() at all, so the "a section
+    can't flag itself" rule has to be applied here too, separately."""
+    a = asked(document_id)
+    blocking_model["conflicts"] = [
+        Conflict(section_id="s2", quote="The engagement is advisory.",
+                 explanation="the redraft compared against its own old text", blocking=False)
+    ]
+
+    outcome = orchestrator.resume(a.session_id, option_key="a")
+
+    assert "s2" not in [n.section_id for n in outcome.notes]
+
+
 def test_holding_reports_what_the_recheck_finds_as_a_note_never_a_second_question(
     document_id, blocking_model
 ):

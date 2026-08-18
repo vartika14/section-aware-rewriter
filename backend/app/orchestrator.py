@@ -6,7 +6,7 @@ what makes "at most one question, ever" a property of the type checker.
 from pydantic import BaseModel
 
 from . import store
-from .conflicts import Conflict, Note, decide, find_conflicts, ground, to_notes
+from .conflicts import Conflict, Note, decide, exclude_self_references, find_conflicts, ground, to_notes
 from .question import Branch, Question, compose_question
 from .rewrite import draft_section, find_section, overlay_texts
 
@@ -149,6 +149,10 @@ def resume(session_id: str, *, option_key: str) -> Completed | Declined:
             sections=session.context, section_id=session.section_id,
             instruction=session.instruction, new_text=draft.new_text,
         )
+        # Same rule decide() applies on a first-round rewrite: a finding
+        # against the section being redrafted isn't a conflict with another
+        # section, so it must never show up as a note about itself.
+        found = exclude_self_references(found, session.section_id)
         grounded = ground(found, by_id, rewritten_id=session.section_id)
         notes = session.notes + to_notes(found, grounded, by_id)
         new_text = draft.new_text

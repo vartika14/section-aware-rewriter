@@ -167,6 +167,21 @@ all three sample documents, not from reasoning about it.
   either outcome path runs — confirmed clean across 5 live runs, with a
   legitimate cross-section finding (the executive summary genuinely affected
   by the same edit) still coming through correctly on a 6th.
+- **The same self-reference bug had a second, separate copy.** The fix above
+  lives inside `decide()` — but `orchestrator.resume()`'s "hold" branch builds
+  its own notes directly, with its own call to `find_conflicts()` and its own
+  call to `to_notes()`, never going through `decide()` at all. Fixing one of
+  the two call sites and not the other is exactly how a rewritten section
+  could still flag itself, just only after the author chose to hold and
+  redraft. Live testing couldn't reliably force the real model to trigger this
+  specific path, so it was confirmed the other way round: a test that hands
+  `resume()` a hand-built finding pointing at the section being redrafted,
+  red before the fix, green after. Both call sites now share one function,
+  `exclude_self_references()`, so this can't quietly happen a third time
+  somewhere else. Noticed in passing, not yet fixed: the same section can show
+  up twice in the final notes list (once from the original question, once
+  from the re-check) — a duplicate, not a wrong answer, and a smaller issue
+  than either of the above.
 
 ## How to test
 

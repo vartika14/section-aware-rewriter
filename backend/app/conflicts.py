@@ -163,6 +163,20 @@ class Decision(BaseModel):
     notes: list[Note] = []
 
 
+def exclude_self_references(conflicts: list[Conflict], rewritten_id: str) -> list[Conflict]:
+    """A finding against the section being rewritten isn't a conflict with
+    another section at all — it's just the rewrite.
+
+    Pulled out as its own function because it's needed in two separate
+    places: here in decide(), and in orchestrator.py's resume(), which builds
+    its own notes on the "hold" branch without going through decide() at all.
+    Fixing it in one of those two places and not the other is exactly how
+    this bug got in — a rewritten section could still flag itself, but only
+    after being told to hold and redraft.
+    """
+    return [c for c in conflicts if c.section_id != rewritten_id]
+
+
 def decide(conflicts: list[Conflict], sections: list[Section], rewritten_id: str) -> Decision:
     """Ungrounded conflicts never block — a possibly hallucinated conflict must
     not interrupt anyone, the same asymmetry the old design measured and kept.
@@ -173,13 +187,11 @@ def decide(conflicts: list[Conflict], sections: list[Section], rewritten_id: str
     no counter: there is only ever one group to ask about, by construction.
     """
     by_id = {s.id: s for s in sections}
-    # A finding against the section being rewritten isn't a conflict with
-    # another section at all — it's just the rewrite. Drop it here, before it
-    # can leak into a note or a question, not only from the blocking check.
-    # ground() also excludes it further down, kept as a second, independent
-    # check so ground() stays correct on its own if anything ever calls it
-    # without this filter applied first.
-    conflicts = [c for c in conflicts if c.section_id != rewritten_id]
+    # Drop self-references before anything else can use this list, not only
+    # from the blocking check. ground() also excludes them further down,
+    # kept as a second, independent check so ground() stays correct on its
+    # own if anything ever calls it without this filter applied first.
+    conflicts = exclude_self_references(conflicts, rewritten_id)
     grounded = ground(conflicts, by_id, rewritten_id)
     blocking = [c for c in grounded if c.blocking]
 
