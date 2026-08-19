@@ -8,7 +8,7 @@ check is ever run — a nonsensical instruction should never cost a DETECT call.
 import pytest
 
 from app.parsing import Section
-from app.rewrite import DraftResult, draft_section, find_section, overlay_texts, render_document
+from app.rewrite import DraftResult, draft_section, overlay_texts, render_document
 
 SECTIONS = [
     Section(id="s1", heading="1. Executive Summary", text="Act on it this quarter."),

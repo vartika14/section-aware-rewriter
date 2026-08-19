@@ -1,9 +1,6 @@
-"""Tests for DETECT and the interrupt policy — conflicts.py in full.
-
-Split into three parts as the file grows across two tasks: DETECT (this part,
-the one LLM call, tested with the seam substituted), ground() and decide() (pure
-Python, hand-built findings including dishonest ones — this is the new interrupt
-policy's test suite, the direct replacement for the old test_policy.py).
+"""Tests for conflicts.py: DETECT (the AI call, tested with the seam
+substituted) and the interrupt policy — ground() and decide() — tested
+against hand-built findings, including dishonest ones.
 """
 
 import pytest
@@ -85,8 +82,8 @@ def test_find_conflicts_is_pinned_to_temperature_zero(monkeypatch):
 
 
 def test_the_section_id_field_is_constrained_to_real_ids():
-    """The dynamic schema is the whole fix for the old id-repair machinery: the
-    model literally cannot return an id that doesn't exist in this document."""
+    """The model literally cannot return an id that doesn't exist in this
+    document — the schema is built per request to only allow real ones."""
     from pydantic import ValidationError
 
     from app.conflicts import _conflict_schema
@@ -101,7 +98,7 @@ def test_the_section_id_field_is_constrained_to_real_ids():
 
 # --- ground(): is the conflict real, and is it actually another section? ---
 
-from app.conflicts import Decision, decide, ground, to_notes  # noqa: E402
+from app.conflicts import decide, ground  # noqa: E402
 
 BY_ID = {s.id: s for s in SECTIONS}
 
@@ -138,9 +135,7 @@ def test_a_conflict_naming_an_unknown_section_is_dropped():
 
 
 def test_a_conflict_against_the_rewritten_section_itself_is_dropped():
-    """A section cannot conflict with itself — that is just the rewrite. This is
-    the direct fix for the old self-reference hole: it cannot be reached here,
-    because there is no separate 'resolution' citation left to ground."""
+    """A section cannot conflict with itself — that's just the rewrite."""
     assert ground([conflict(section_id="s2")], BY_ID, rewritten_id="s2") == []
 
 

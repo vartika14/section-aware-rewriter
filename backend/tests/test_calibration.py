@@ -4,9 +4,8 @@ Opt-in, real model, real tokens:
 
     RUN_LIVE_TESTS=1 ./.venv/bin/python -m pytest tests/test_calibration.py -q
 
-The old version of this file tested one document. This one deliberately spans
-three, because a design that only works on the vocabulary of one proposal has
-not actually been shown to generalize — it has been shown to fit.
+Spans three different documents on purpose — a design that only works on the
+vocabulary of one proposal hasn't actually been shown to generalize.
 """
 
 import os
@@ -65,18 +64,12 @@ def charter():
 
 
 def test_naming_deliverables_asks_about_the_fixed_fee(proposal):
-    """The brief's own worked example.
+    """Making the scope concrete should raise a question about the fee,
+    which was priced against the old, vaguer scope.
 
-    Measured at ~5/7 across repeated runs on this deployment, not 7/7.
-    Investigated rather than assumed: decide() reliably returns "ask" when
-    handed the grounded, blocking finding this instruction should produce — the
-    miss is DETECT occasionally judging the draft's added detail (which stays
-    within the document's own interview cap) as consistent with the fee rather
-    than as changing what it covers. Sharpening the "commits against specific
-    wording, not just subject" guidance in conflicts.py's SYSTEM prompt measurably
-    improved this (it was failing more often before), without resorting to a
-    keyword list. Temperature 0 is documented as not bit-deterministic on this
-    deployment; this is that property, not a code defect."""
+    This doesn't pass 100% of the time even with temperature pinned to 0 —
+    the model isn't perfectly deterministic on this deployment, so an
+    occasional miss here reflects that, not a bug in decide()."""
     decision = run(
         proposal, "Scope of Work",
         "Make this concrete. List the actual deliverables and drop the hedging.",
@@ -96,9 +89,10 @@ def test_tightening_the_summary_prose_asks_nothing(proposal):
 
 
 def test_narrowing_the_remote_work_definition_asks_about_approval(policy):
-    """§3's approval rule is measured against §2's definition. Shrinking the
-    definition changes what needs HR sign-off — and quotes_a_commitment, the
-    old design's money/EUR/fee regex, would never have flagged this."""
+    """§3's approval rule depends on §2's definition. Shrinking the
+    definition changes what needs HR sign-off — a document with no money
+    language anywhere, so this checks the policy isn't secretly tied to
+    fee-and-price vocabulary."""
     decision = run(
         policy, "Definitions",
         "Narrow this to one day per week instead of three.",

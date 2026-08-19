@@ -78,9 +78,8 @@ def test_sections_get_stable_sequential_ids():
 
 def test_text_before_the_first_heading_gets_a_fixed_id_not_a_shifted_one():
     """A proposal often opens with a title block or a paragraph of preamble.
-    Dropping it would silently hide part of the document from the agent — but
-    giving it `s1` used to shift every real section's number by one, which
-    silently misaimed three calibration tests in the old design."""
+    Dropping it would silently hide part of the document from the agent, and
+    giving it `s1` would shift every real section's number by one."""
     data = make_docx(
         [
             ("Normal", "Prepared for Meridian Retail BV, 13 August 2026."),

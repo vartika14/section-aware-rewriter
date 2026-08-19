@@ -1,13 +1,11 @@
 """Tests for turning `decide()`'s grouped findings into an answerable question.
 
-No model call happens here any more: with several sections potentially at
-stake at once, there is no single sentence left to polish, so the row for
-each section is built straight from Python — heading, quotes, explanation,
-three lettered options.
+No AI call happens here — each section's row is built straight from Python:
+heading, quotes, explanation, three lettered options.
 """
 
 from app.conflicts import Conflict, ConflictGroup
-from app.question import Branch, Option, build_options, build_question
+from app.question import Branch, build_options, build_question
 
 HEADING = "4. Fees and Payment"
 

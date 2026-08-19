@@ -24,7 +24,15 @@ export default function Home() {
   const [result, setResult] = useState<RewriteResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const selected = document?.sections.find((s) => s.id === selectedId) ?? null;
+  // Sections as the author currently sees them: accepted edits overlaid on
+  // top of the original upload. Anything shown on screen should read from
+  // this, not from document.sections directly, or a section you've already
+  // edited would keep showing its stale original text.
+  const displaySections = (document?.sections ?? []).map((s) =>
+    s.id in currentTexts ? { ...s, text: currentTexts[s.id] } : s,
+  );
+
+  const selected = displaySections.find((s) => s.id === selectedId) ?? null;
 
   async function run(call: () => Promise<RewriteResult>) {
     setBusy(true);
@@ -114,7 +122,7 @@ export default function Home() {
               </p>
 
               <SectionList
-                sections={document.sections}
+                sections={displaySections}
                 headingsDetected={document.headings_detected}
                 selectedId={selectedId}
                 editedIds={editedIds}

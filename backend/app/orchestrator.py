@@ -8,7 +8,7 @@ end up asking a second question.
 from pydantic import BaseModel
 
 from . import store
-from .conflicts import Conflict, ConflictGroup, Note, decide, exclude_self_references, find_conflicts, ground, to_notes
+from .conflicts import Conflict, Note, decide, exclude_self_references, find_conflicts, ground, to_notes
 from .question import Branch, Question, build_question
 from .rewrite import draft_section, find_section, overlay_texts
 

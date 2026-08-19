@@ -145,9 +145,6 @@ def test_a_pending_question_saves_a_snapshot_of_the_edited_document(document_id,
     assert saved["s4"] == "A fixed fee of EUR 90,000."
 
 
-from app.question import Branch  # noqa: E402
-
-
 def asked(document_id: str) -> orchestrator.Asking:
     outcome = orchestrator.start(document_id, section_id="s2", instruction="Be concrete.")
     assert isinstance(outcome, orchestrator.Asking)

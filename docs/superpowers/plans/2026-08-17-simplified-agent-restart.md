@@ -15,8 +15,7 @@ counter. Full detail in the spec.
 15, TypeScript, Tailwind.
 
 **Spec:** `docs/superpowers/specs/2026-08-17-simplified-agent-design.md` — this plan implements every
-numbered section. `docs/superpowers/specs/2026-08-13-section-rewrite-agent-design.md` (superseded)
-is kept for the measured findings §0 of the new spec draws from.
+numbered section.
 
 ## Global Constraints
 
