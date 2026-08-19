@@ -133,5 +133,6 @@ def test_the_loop_asks_at_most_once(proposal):
         instruction="Make this concrete. List the actual deliverables and drop the hedging.",
     )
     if isinstance(outcome, orchestrator.Asking):
-        outcome = orchestrator.resume(outcome.session_id, option_key="a")
+        choices = {group.section_id: "a" for group in outcome.question.groups}
+        outcome = orchestrator.resume(outcome.session_id, choices=choices)
     assert isinstance(outcome, (orchestrator.Completed, orchestrator.Declined))

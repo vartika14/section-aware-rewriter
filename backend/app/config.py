@@ -42,14 +42,12 @@ class Settings(BaseSettings):
     @field_validator("azure_openai_api_key", "openai_api_key", mode="before")
     @classmethod
     def _decode_base64_key(cls, value: str | None) -> str | None:
-        """Keys are stored base64-encoded in .env and decoded on load.
+        """Keys are stored base64-encoded in .env and decoded here on load.
 
-        Not encryption — anyone with filesystem access decodes it in one line —
-        but it keeps the raw key from being readable at a glance in a `cat .env`
-        or over a shoulder, which is the actual threat model for a local
-        gitignored file. A key that fails to decode is a clear configuration
-        error, not a silent pass-through: better to fail at startup than to send
-        a garbled key to Azure and get a confusing auth error back.
+        This isn't encryption — anyone with file access can decode it in one
+        line — it just keeps the raw key from being readable at a glance. A
+        key that fails to decode fails loudly at startup, rather than being
+        sent to Azure and coming back as a confusing auth error.
         """
         if not value:
             return value

@@ -1,7 +1,7 @@
-"""The single seam through which every model call passes.
+"""The one function every AI call in this app goes through.
 
-There is one function here on purpose. It means the Azure-vs-OpenAI difference is
-confined to this file, and the agent has exactly one place to substitute in tests.
+Keeping it to one function means the Azure-vs-OpenAI difference lives in one
+place, and tests have exactly one thing to fake.
 """
 
 from functools import lru_cache
@@ -36,23 +36,16 @@ def structured_completion(
 ) -> T:
     """Call the model and return a validated instance of `schema`.
 
-    Uses structured outputs, so the model is constrained to the schema rather
-    than asked politely to emit JSON.
+    Uses structured outputs, so the model's response is constrained to match
+    the schema instead of just being asked nicely for JSON.
 
-    `temperature` is optional rather than defaulted because only one caller needs
-    it: the audit, which pins it to 0 so the interrupt policy cannot fire
-    intermittently. Everything else takes the deployment's default.
+    `temperature` is optional — DRAFT and DETECT pin it to 0, so the same
+    input gives the same decision. Other calls use the deployment's default.
 
-    A response that fails to parse is retried once — schema violations are
-    usually a one-off, and a silent partial result is never returned. An outright
-    refusal is not retried: a content filter will refuse again, and retrying only
-    delays telling the user.
-
-    The retry is nudged off a pinned temperature. Repeating a request byte for
-    byte mostly repeats the answer, and both graded calls sit at 0 — so without
-    the nudge a deterministic schema failure would fail twice and call itself a
-    retry. The nudge is small and applies only to the second attempt, so the
-    determinism the pinning buys is intact for every call that succeeds.
+    A response that fails to parse is retried once, with the temperature
+    nudged up slightly (so a deterministic failure doesn't just fail the
+    same way twice). An outright refusal is never retried — a content filter
+    will refuse again, and retrying only delays telling the user.
     """
     settings = get_settings()
 

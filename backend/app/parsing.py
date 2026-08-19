@@ -1,11 +1,9 @@
-"""Turn a .docx into the sections the rest of the app addresses by id.
+"""Turn an uploaded .docx into a list of sections, each with an id.
 
-.docx only, deliberately. Word carries real heading styles, so section
-boundaries are read rather than guessed. PDF would mean inferring structure
-from font sizes and positions — a far larger problem for no extra credit.
-
-When a document has no heading styles at all we still return something usable,
-but we say so, so the UI can tell the user the split is a guess.
+Word documents carry real heading styles, so section boundaries can be read
+directly instead of guessed. If a document has no heading styles, we fall
+back to splitting on blank lines and say so, so the app can warn the user
+the split is a guess.
 """
 
 from io import BytesIO
@@ -55,10 +53,8 @@ def parse_docx(data: bytes) -> ParsedDocument:
     n = 1
     for heading, text in pairs:
         if heading == PREAMBLE_HEADING:
-            # A fixed id, outside the numbering sequence — so it never shifts
-            # what a real section's number means. Only ever produced by the
-            # heading-styled path; the blank-line fallback has no preamble
-            # concept, since each block's own first line is its heading.
+            # Fixed id, kept out of the s1/s2/... numbering so it never
+            # shifts what a real section's number means.
             sections.append(Section(id="preamble", heading=heading, text=text))
         else:
             sections.append(Section(id=f"s{n}", heading=heading, text=text))

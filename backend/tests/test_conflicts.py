@@ -171,21 +171,23 @@ def test_an_unverified_conflict_never_blocks_but_is_still_reported():
 def test_a_blocking_grounded_conflict_asks():
     decision = decide([conflict()], SECTIONS, rewritten_id="s2")
     assert decision.action == "ask"
-    assert [c.section_id for c in decision.asking] == ["s3"]
+    assert [g.section_id for g in decision.asking] == ["s3"]
+    assert decision.asking[0].heading == "3. Fees"
 
 
-def test_conflicts_against_the_same_section_are_all_asked_about_together():
+def test_conflicts_against_the_same_section_are_grouped_into_one_row():
     decision = decide(
         [conflict(), conflict(quote="covers the scope in section 2", explanation="also fee-related")],
         SECTIONS, rewritten_id="s2",
     )
     assert decision.action == "ask"
-    assert len(decision.asking) == 2
+    assert len(decision.asking) == 1
+    assert len(decision.asking[0].conflicts) == 2
 
 
-def test_only_the_first_blocking_section_is_asked_about_the_rest_become_notes():
-    """Two blocking conflicts, two different sections: one question, ever — the
-    other becomes a note rather than a second interrupt."""
+def test_two_different_blocking_sections_are_both_asked_about_in_one_question():
+    """Two blocking conflicts against two different sections both become rows
+    in the same question — neither is silently downgraded to a note."""
     decision = decide(
         [
             conflict(section_id="s3"),
@@ -194,8 +196,19 @@ def test_only_the_first_blocking_section_is_asked_about_the_rest_become_notes():
         SECTIONS, rewritten_id="s2",
     )
     assert decision.action == "ask"
-    assert {c.section_id for c in decision.asking} == {"s3"}
-    assert "s1" in [n.section_id for n in decision.notes]
+    assert {g.section_id for g in decision.asking} == {"s3", "s1"}
+    assert [n.section_id for n in decision.notes] == []
+
+
+def test_blocking_sections_are_grouped_in_the_order_detect_reported_them():
+    decision = decide(
+        [
+            conflict(section_id="s1", quote="A recommendation within the quarter"),
+            conflict(section_id="s3"),
+        ],
+        SECTIONS, rewritten_id="s2",
+    )
+    assert [g.section_id for g in decision.asking] == ["s1", "s3"]
 
 
 def test_a_conflict_against_the_rewritten_section_never_blocks():

@@ -1,17 +1,14 @@
-"""Comparing text the way a reader would.
+"""Comparing text the way a reader would, ignoring whitespace and case.
 
-Used for matching quotes and headings against the document. Lives on its own
-because both the audit boundary and the policy need it, and the audit cannot
-import the policy — the policy is built on top of it.
+Used wherever a quote from the model needs to be checked against the real
+document text.
 """
 
 import re
 
 
 def normalize(text: str) -> str:
-    """Compare on words, not formatting.
-
-    Reflowed whitespace and changed case are ordinary things for a model to do
-    when copying text. Only invented words should read as invented.
-    """
+    """Strip formatting differences so only real word changes show up as
+    different. A model reflowing whitespace or changing case while copying a
+    quote shouldn't count as inventing something."""
     return re.sub(r"\s+", " ", text).strip().lower()

@@ -1,69 +1,59 @@
-"""Tests for how the clarification question gets worded.
+"""Tests for turning `decide()`'s grouped findings into an answerable question.
 
-The split under test: Python decides what the branches are, the model only makes
-the prose read like a colleague wrote it. The model is never allowed to invent,
-drop or renumber an option — if it tries, the deterministic wording is used
-instead. That keeps the graded judgement in code that can be tested offline while
-the consultant still reads a sentence rather than a template.
+No model call happens here any more: with several sections potentially at
+stake at once, there is no single sentence left to polish, so the row for
+each section is built straight from Python — heading, quotes, explanation,
+three lettered options.
 """
 
-import pytest
-
-from app.conflicts import Conflict
-from app.parsing import Section
-from app.question import Branch, Option, Question, build_options, compose_question
-
-SECTIONS = [
-    Section(id="s2", heading="2. Scope of Work", text="The engagement is advisory."),
-    Section(
-        id="s4",
-        heading="4. Fees and Payment",
-        text="A fixed fee of EUR 48,000 covers the engagement in full. The fee "
-        "assumes the scope set out in section 2.",
-    ),
-]
+from app.conflicts import Conflict, ConflictGroup
+from app.question import Branch, Option, build_options, build_question
 
 HEADING = "4. Fees and Payment"
 
 
-def conflicts(*items: Conflict) -> list[Conflict]:
-    return list(items) or [
-        Conflict(
-            section_id="s4",
-            quote="A fixed fee of EUR 48,000",
-            explanation="The fee was priced against the old, vaguer scope.",
-            blocking=True,
-        )
-    ]
+def conflict(**overrides) -> Conflict:
+    return Conflict(
+        **{
+            "section_id": "s4",
+            "quote": "A fixed fee of EUR 48,000",
+            "explanation": "The fee was priced against the old, vaguer scope.",
+            "blocking": True,
+            **overrides,
+        }
+    )
 
 
-def no_model(*, system, user, schema, **kwargs):
-    raise AssertionError("the deterministic path must not call the model")
+def group(**overrides) -> ConflictGroup:
+    return ConflictGroup(
+        **{
+            "section_id": "s4",
+            "heading": HEADING,
+            "conflicts": [conflict()],
+            **overrides,
+        }
+    )
 
 
-# --- the branches are Python's, not the model's --------------------------
+# --- the branches are Python's, generated per section ---------------------
 
 
 def test_the_branches_are_the_three_ways_out_of_a_conflict():
-    options = build_options(conflicts(), heading=HEADING)
+    options = build_options([conflict()], heading=HEADING)
 
     assert [option.key for option in options] == ["a", "b", "c"]
 
 
 def test_every_branch_names_the_section_it_would_affect():
     """A branch a consultant cannot act on is not a branch."""
-    for option in build_options(conflicts(), heading=HEADING):
-        assert "4. Fees and Payment" in option.label
+    for option in build_options([conflict()], heading=HEADING):
+        assert HEADING in option.label
 
 
 def test_the_branches_do_not_depend_on_the_model_being_reachable():
-    options = build_options(conflicts(), heading=HEADING)
-    again = build_options(conflicts(), heading=HEADING)
-
-    assert options == again
-
-
-# --- the branches have names, not just keys ------------------------------
+    assert build_options([conflict()], heading=HEADING) == build_options(
+        [conflict()], heading=HEADING
+    )
 
 
 def test_each_branch_key_has_a_name_the_resume_path_can_switch_on():
@@ -74,206 +64,64 @@ def test_each_branch_key_has_a_name_the_resume_path_can_switch_on():
 
 
 def test_the_branch_keys_and_the_rendered_options_cannot_drift_apart():
-    assert [option.key for option in build_options(conflicts(), heading=HEADING)] == [
+    assert [option.key for option in build_options([conflict()], heading=HEADING)] == [
         branch.value for branch in Branch
     ]
 
 
 def test_an_unrecognised_key_is_not_a_branch():
+    import pytest
+
     with pytest.raises(ValueError):
         Branch("z")
 
 
-# --- the instruction reaches the prompt -----------------------------------
+# --- build_question(): one row per group ------------------------------------
 
 
-def test_the_phrasing_call_is_told_what_the_author_asked_for(monkeypatch):
-    """The system prompt forbids re-asking the instruction. A model that is never
-    shown the instruction cannot honour that."""
-    seen = {}
+def test_one_group_becomes_one_row():
+    question = build_question([group()])
 
-    def capture(*, system, user, schema, **kwargs):
-        seen["user"] = user
-        return Question(
-            text='It says "A fixed fee of EUR 48,000". Which way?',
-            options=build_options(conflicts(), heading=HEADING),
-        )
+    assert len(question.groups) == 1
+    assert question.groups[0].section_id == "s4"
+    assert question.groups[0].heading == HEADING
 
-    monkeypatch.setattr("app.question.structured_completion", capture)
 
-    compose_question(
-        conflicts(),
-        heading=HEADING,
-        sections=SECTIONS,
-        instruction="Make this concrete. Name the deliverables.",
+def test_each_row_keeps_its_own_conflicts_and_options():
+    question = build_question(
+        [group(conflicts=[conflict(), conflict(quote="covers the engagement in full")])]
     )
 
-    assert "Make this concrete. Name the deliverables." in seen["user"]
+    row = question.groups[0]
+    assert len(row.conflicts) == 2
+    assert [o.key for o in row.options] == ["a", "b", "c"]
 
 
-# --- the question itself -------------------------------------------------
-
-
-def test_the_question_quotes_the_clause_it_is_worried_about(monkeypatch):
-    """Naming the exact words is what separates a useful question from
-    'this may affect pricing, continue?'."""
-    monkeypatch.setattr("app.question.structured_completion", no_model)
-
-    question = compose_question(
-        conflicts(), heading=HEADING, sections=SECTIONS,
-        instruction="Name the deliverables.", polish=False,
-    )
-
-    assert "A fixed fee of EUR 48,000" in question.text
-
-
-def test_the_question_covers_every_conflict_in_the_group(monkeypatch):
-    """Two consequences on one clause are one question, but the human still has
-    to be told about both of them."""
-    monkeypatch.setattr("app.question.structured_completion", no_model)
-
-    question = compose_question(
-        conflicts(
-            Conflict(
-                section_id="s4", quote="A fixed fee of EUR 48,000",
-                explanation="The fee was priced against the old scope.", blocking=True,
+def test_two_groups_become_two_independent_rows():
+    """The point of this whole design: Fees and Timeline both get a row, each
+    answerable on its own, rather than one interrupt now and a second later."""
+    question = build_question(
+        [
+            group(section_id="s4", heading="4. Fees and Payment"),
+            group(
+                section_id="s5",
+                heading="5. Timeline",
+                conflicts=[conflict(section_id="s5", quote="four phases of four weeks each")],
             ),
-            Conflict(
-                section_id="s4", quote="covers the engagement in full",
-                explanation="The rewrite adds work beyond the original engagement.",
-                blocking=True,
-            ),
-        ),
-        heading=HEADING, sections=SECTIONS,
-        instruction="Name the deliverables.", polish=False,
+        ]
     )
 
-    assert "priced against the old scope" in question.text
-    assert "beyond the original engagement" in question.text
+    assert [row.section_id for row in question.groups] == ["s4", "s5"]
+    assert question.groups[1].heading == "5. Timeline"
+    assert "four phases of four weeks each" in question.groups[1].conflicts[0].quote
 
 
-def test_the_question_does_not_merely_re_ask_the_instruction(monkeypatch):
-    monkeypatch.setattr("app.question.structured_completion", no_model)
-
-    question = compose_question(
-        conflicts(), heading=HEADING, sections=SECTIONS,
-        instruction="Name the deliverables.", polish=False,
+def test_rows_preserve_the_order_they_were_given_in():
+    question = build_question(
+        [
+            group(section_id="s5", heading="5. Timeline"),
+            group(section_id="s4", heading="4. Fees and Payment"),
+        ]
     )
 
-    assert "name the deliverables" not in question.text.lower()
-
-
-# --- the model polishes, but cannot take the wheel -----------------------
-
-
-def test_polished_wording_is_used_when_it_keeps_the_branches(monkeypatch):
-    def polish(*, system, user, schema, **kwargs):
-        return schema(
-            text='4. Fees and Payment commits to "A fixed fee of EUR 48,000", '
-            "priced against the scope you are changing. How should I proceed?",
-            options=[
-                Option(key="a", label="Keep the fee, scope the rewrite to fit"),
-                Option(key="b", label="Rewrite, and flag the fee for review"),
-                Option(key="c", label="Rewrite, and accept the mismatch"),
-            ],
-        )
-
-    monkeypatch.setattr("app.question.structured_completion", polish)
-
-    question = compose_question(
-        conflicts(), heading=HEADING, sections=SECTIONS, instruction="Name the deliverables."
-    )
-
-    assert question.text.startswith("4. Fees and Payment commits to")
-    assert question.options[1].label == "Rewrite, and flag the fee for review"
-
-
-def test_wording_that_renumbers_the_branches_is_discarded(monkeypatch):
-    """The keys are the contract with the front end and with the resume step. A
-    model that returns different ones has changed the decision, not the prose."""
-
-    def rogue(*, system, user, schema, **kwargs):
-        return schema(
-            text="Which would you prefer?",
-            options=[
-                Option(key="x", label="Keep the fee"),
-                Option(key="y", label="Flag it"),
-            ],
-        )
-
-    monkeypatch.setattr("app.question.structured_completion", rogue)
-
-    question = compose_question(
-        conflicts(), heading=HEADING, sections=SECTIONS, instruction="Name the deliverables."
-    )
-
-    assert [option.key for option in question.options] == ["a", "b", "c"]
-    assert "A fixed fee of EUR 48,000" in question.text
-
-
-def test_wording_that_drops_the_quote_is_discarded(monkeypatch):
-    """Observed against the real model: the polish step returned a fluent
-    sentence that quoted nothing and referred to the section by its internal id.
-    A question that does not name the clause it is worried about is the vague
-    warning this design exists to avoid, however well it reads."""
-
-    def unquoted(*, system, user, schema, **kwargs):
-        return schema(
-            text="The rewrite makes section 5's reference slightly outdated. "
-            "How would you like to handle this inconsistency?",
-            options=build_options(conflicts(), heading=HEADING),
-        )
-
-    monkeypatch.setattr("app.question.structured_completion", unquoted)
-
-    question = compose_question(
-        conflicts(), heading=HEADING, sections=SECTIONS, instruction="Name the deliverables."
-    )
-
-    assert "A fixed fee of EUR 48,000" in question.text
-
-
-def test_wording_is_kept_when_it_preserves_any_one_quote(monkeypatch):
-    """Two findings, one quote carried through — the model is allowed to lead
-    with whichever clause it judges most legible."""
-
-    def partial(*, system, user, schema, **kwargs):
-        return schema(
-            text='Section 4 commits to "A fixed fee of EUR 48,000" priced '
-            "against the scope you are changing. How should I proceed?",
-            options=build_options(conflicts(), heading=HEADING),
-        )
-
-    monkeypatch.setattr("app.question.structured_completion", partial)
-
-    question = compose_question(
-        conflicts(
-            Conflict(
-                section_id="s4", quote="A fixed fee of EUR 48,000",
-                explanation="Priced against the old scope.", blocking=True,
-            ),
-            Conflict(
-                section_id="s4", quote="covers the engagement in full",
-                explanation="The rewrite adds work.", blocking=True,
-            ),
-        ),
-        heading=HEADING, sections=SECTIONS, instruction="Name the deliverables.",
-    )
-
-    assert question.text.startswith("Section 4 commits to")
-
-
-def test_a_model_failure_falls_back_to_the_deterministic_question(monkeypatch):
-    """Phrasing is a nicety. Losing it must not lose the question."""
-
-    def explode(*, system, user, schema, **kwargs):
-        raise RuntimeError("upstream is down")
-
-    monkeypatch.setattr("app.question.structured_completion", explode)
-
-    question = compose_question(
-        conflicts(), heading=HEADING, sections=SECTIONS, instruction="Name the deliverables."
-    )
-
-    assert "A fixed fee of EUR 48,000" in question.text
-    assert [option.key for option in question.options] == ["a", "b", "c"]
+    assert [row.section_id for row in question.groups] == ["s5", "s4"]

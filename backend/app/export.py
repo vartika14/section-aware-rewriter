@@ -1,9 +1,6 @@
-"""Turn a list of sections back into a real .docx file.
-
-This is the reverse of what parsing.py does. It builds the file the same way
-the sample documents in this project are already built: plain text for
-anything before the first heading, and a proper "Heading 1" style plus normal
-paragraphs for everything else.
+"""Turn a list of sections back into a real .docx file — the reverse of
+parsing.py. Each section becomes a "Heading 1" paragraph plus body text,
+except the untitled opening text, which gets no heading at all.
 """
 
 from io import BytesIO

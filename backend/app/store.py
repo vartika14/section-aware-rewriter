@@ -1,18 +1,14 @@
-"""In-memory state.
+"""In-memory state: uploaded documents, and rewrites paused on a question.
 
-Persistence across restarts is explicitly out of scope for this assignment, so
-a module-level dict is the honest choice rather than a database that would need
-explaining.
-
-Two things live here: uploaded documents, and rewrite runs that suspended
-themselves to ask the user a question.
+Nothing here survives a server restart — that's fine for this app, which
+doesn't need persistence.
 """
 
 from uuid import uuid4
 
 from pydantic import BaseModel
 
-from .conflicts import Conflict, Note
+from .conflicts import ConflictGroup, Note
 from .parsing import ParsedDocument, Section
 
 _DOCUMENTS: dict[str, ParsedDocument] = {}
@@ -20,23 +16,18 @@ _SESSIONS: dict[str, "RewriteSession"] = {}
 
 
 class RewriteSession(BaseModel):
-    """A rewrite that's paused, waiting for the user to answer one question.
+    """One rewrite, paused while it waits for the author to answer a question.
 
-    `context` is a snapshot: the document exactly as it looked — including any
-    edits the author had already accepted — at the moment the question was
-    asked. When the answer comes back, we check it against this snapshot, not
-    against whatever the document looks like by then. That way the question
-    and the answer are always talking about the exact same document.
+    `context` is the document exactly as it looked when the question was
+    asked, so the answer is always checked against the same document the
+    question was about — not whatever the document looks like by the time
+    the author replies.
 
-    `draft_text` is the rewrite we already produced, so answering the question
-    doesn't mean starting over from nothing. `asking` is what the question is
-    about. `notes` are things we noticed but decided not to ask about — kept
-    here so we can still show them in the final result.
+    `draft_text` is the rewrite already written, so answering doesn't mean
+    starting over. `asking` is the question itself, one row per section that
+    blocks. `notes` are things noticed but not worth asking about.
 
-    `resolved` marks a session as finished, so answering it twice (say, from
-    an old browser tab) gives a clear error instead of quietly running again.
-    There's no "how many times have we asked" counter here, because the app
-    only ever asks once.
+    `resolved` stops a session from being answered twice.
     """
 
     document_id: str
@@ -44,7 +35,7 @@ class RewriteSession(BaseModel):
     instruction: str
     draft_text: str
     context: list[Section]
-    asking: list[Conflict]
+    asking: list[ConflictGroup]
     notes: list[Note]
     resolved: bool = False
 

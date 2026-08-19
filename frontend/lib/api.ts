@@ -1,6 +1,6 @@
 /**
- * Every call to the Python API goes through this file, so the components stay
- * free of fetch plumbing and there is one place to change the base URL.
+ * Every call to the backend goes through this file, so components don't
+ * need their own fetch logic, and the base URL only lives in one place.
  */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -20,8 +20,8 @@ export type UploadResponse = {
 async function unwrap<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    // FastAPI returns a string `detail` for our own HTTPExceptions, but a list
-    // of error objects for 422 schema violations. Flatten both to a sentence.
+    // The backend sends a plain string for most errors, but a list of
+    // objects for validation errors. Turn either into one readable sentence.
     const detail = Array.isArray(body?.detail)
       ? body.detail.map((e: { msg?: string }) => e.msg).join("; ")
       : body?.detail;
@@ -35,19 +35,33 @@ export type Note = {
   heading: string;
   quote: string;
   explanation: string;
-  /** False when the quoted clause could not be found where the model said it
-   *  was — a possibly invented conflict, shown but never asked about. */
+  /** False when the quote couldn't be found in that section — a possibly
+   *  invented finding, shown but never something the rewrite waited on. */
   verified: boolean;
 };
 
 export type Option = { key: string; label: string };
 
-/**
- * `status` is the discriminator. All three arms come from `/rewrite`; only
- * `complete` and `declined` come from `/rewrite/{id}/answer` — the backend's
- * resume() cannot return a second question, and answerQuestion() below says so
- * in its own return type.
- */
+export type ConflictItem = {
+  section_id: string;
+  quote: string;
+  explanation: string;
+  blocking: boolean;
+};
+
+/** One section the rewrite affects, with its quotes and its own three-way
+ *  choice. Most rewrites produce exactly one of these; a rewrite touching
+ *  more than one commitment produces more. */
+export type QuestionGroup = {
+  section_id: string;
+  heading: string;
+  conflicts: ConflictItem[];
+  options: Option[];
+};
+
+/** `status` says which of the three shapes this is. Only `complete` and
+ *  `declined` can come back from answering a question — never a second
+ *  question. */
 export type RewriteComplete = {
   status: "complete";
   section_id: string;
@@ -60,8 +74,7 @@ export type RewriteNeedsClarification = {
   status: "needs_clarification";
   session_id: string;
   section_id: string;
-  question: string;
-  options: Option[];
+  groups: QuestionGroup[];
 };
 
 export type RewriteDeclined = {
@@ -96,9 +109,8 @@ export async function rewriteSection(input: {
 }
 
 /**
- * Downloads the finished document as a Blob (a file, not text). This
- * endpoint sends back an actual file, so we don't use the usual unwrap()
- * helper, which expects a JSON response.
+ * Downloads the finished document as a file (not JSON), so this doesn't use
+ * the usual unwrap() helper.
  */
 export async function exportDocument(input: {
   documentId: string;
@@ -120,17 +132,17 @@ export async function exportDocument(input: {
   return response.blob();
 }
 
-/** resume() on the backend cannot ask a second question — its return type has
- *  no Asking arm. This return type says the same thing on the client. */
+/** Answers a paused question. `choices` is one lettered answer per group's
+ *  `section_id`. Can never come back with a second question. */
 export async function answerQuestion(input: {
   sessionId: string;
-  optionKey: string;
+  choices: Record<string, string>;
 }): Promise<RewriteComplete | RewriteDeclined> {
   return unwrap<RewriteComplete | RewriteDeclined>(
     await fetch(`${API_BASE}/rewrite/${input.sessionId}/answer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ option_key: input.optionKey }),
+      body: JSON.stringify({ choices: input.choices }),
     }),
   );
 }

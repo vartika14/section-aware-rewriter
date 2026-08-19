@@ -15,11 +15,8 @@ export function InstructionPanel({
 }: {
   section: Section;
   busy: boolean;
-  /** True while a question from an earlier rewrite is still waiting for an
-   *  answer. Separate from `busy`: `busy` means "a request is running right
-   *  now," `locked` means "you need to answer the question first." Keeping
-   *  them apart means the button never wrongly says "Rewriting…" when
-   *  nothing is actually running — it's just waiting on you. */
+  /** True while a question is waiting for an answer. Separate from `busy` so
+   *  the button never says "Rewriting…" when nothing is actually running. */
   locked?: boolean;
   onSubmit: (instruction: string) => void;
 }) {

@@ -8,7 +8,7 @@ about the type checker rather than a fact you have to trust a counter for.
 import pytest
 
 from app import orchestrator, store
-from app.conflicts import Conflict
+from app.conflicts import Conflict, ConflictGroup
 from app.parsing import ParsedDocument, Section
 
 SECTIONS = [
@@ -25,8 +25,9 @@ def document_id() -> str:
 
 @pytest.fixture
 def model(monkeypatch):
-    """Substitute DRAFT and DETECT; fail the phrasing call on purpose — this
-    file asserts on the loop, not on wording."""
+    """Substitute DRAFT and DETECT — this file asserts on the loop, not on
+    wording. There's no phrasing call left to fake: the question is built
+    from Python alone (`question.py`)."""
     state = {"applicable": True, "new_text": "drafted", "conflicts": []}
 
     def draft(**kwargs):
@@ -43,10 +44,6 @@ def model(monkeypatch):
 
     monkeypatch.setattr("app.rewrite.structured_completion", draft)
     monkeypatch.setattr("app.conflicts.structured_completion", detect)
-    monkeypatch.setattr(
-        "app.question.structured_completion",
-        lambda **kw: (_ for _ in ()).throw(RuntimeError("phrasing offline")),
-    )
     return state
 
 
@@ -166,6 +163,19 @@ def blocking_model(model):
     return model
 
 
+@pytest.fixture
+def two_blocking_model(model):
+    """Two different sections both blocking at once — the whole reason
+    `asking` is a list of groups rather than a single section."""
+    model["conflicts"] = [
+        Conflict(section_id="s4", quote="A fixed fee of EUR 48,000",
+                 explanation="Priced against the old scope.", blocking=True),
+        Conflict(section_id="s1", quote="A recommendation within the quarter",
+                 explanation="No longer supported by the trimmed scope.", blocking=True),
+    ]
+    return model
+
+
 def test_answering_a_question_uses_the_saved_snapshot_not_the_live_document(
     document_id, model, monkeypatch
 ):
@@ -184,8 +194,11 @@ def test_answering_a_question_uses_the_saved_snapshot_not_the_live_document(
         store.RewriteSession(
             document_id=document_id, section_id="s2", instruction="Be concrete.",
             draft_text="drafted", context=frozen_snapshot,
-            asking=[Conflict(section_id="s4", quote="A fixed fee of EUR 999,000, frozen at ask time.",
-                              explanation="test", blocking=True)],
+            asking=[ConflictGroup(
+                section_id="s4", heading="4. Fees and Payment",
+                conflicts=[Conflict(section_id="s4", quote="A fixed fee of EUR 999,000, frozen at ask time.",
+                                     explanation="test", blocking=True)],
+            )],
             notes=[],
         )
     )
@@ -198,7 +211,7 @@ def test_answering_a_question_uses_the_saved_snapshot_not_the_live_document(
 
     monkeypatch.setattr("app.rewrite.structured_completion", draft)
 
-    orchestrator.resume(session_id, option_key="a")
+    orchestrator.resume(session_id, choices={"s4": "a"})
 
     assert "A fixed fee of EUR 999,000, frozen at ask time." in captured["user"]
     assert "A fixed fee of EUR 48,000 covers it." not in captured["user"]
@@ -209,7 +222,7 @@ def test_holding_produces_a_second_draft(document_id, blocking_model):
     blocking_model["new_text"] = "second draft"
     blocking_model["conflicts"] = []   # the re-check finds nothing new
 
-    outcome = orchestrator.resume(a.session_id, option_key="a")
+    outcome = orchestrator.resume(a.session_id, choices={"s4": "a"})
 
     assert isinstance(outcome, orchestrator.Completed)
     assert outcome.new_text == "second draft"
@@ -227,7 +240,7 @@ def test_holding_never_lets_the_rewritten_section_flag_itself_in_notes(
                  explanation="the redraft compared against its own old text", blocking=False)
     ]
 
-    outcome = orchestrator.resume(a.session_id, option_key="a")
+    outcome = orchestrator.resume(a.session_id, choices={"s4": "a"})
 
     assert "s2" not in [n.section_id for n in outcome.notes]
 
@@ -241,7 +254,7 @@ def test_holding_reports_what_the_recheck_finds_as_a_note_never_a_second_questio
                  explanation="No longer supported by the trimmed scope.", blocking=True)
     ]
 
-    outcome = orchestrator.resume(a.session_id, option_key="a")
+    outcome = orchestrator.resume(a.session_id, choices={"s4": "a"})
 
     assert isinstance(outcome, orchestrator.Completed)  # never Asking — the type already forbids it
     assert "s1" in [n.section_id for n in outcome.notes]
@@ -249,7 +262,7 @@ def test_holding_reports_what_the_recheck_finds_as_a_note_never_a_second_questio
 
 def test_flagging_returns_the_stored_draft_and_keeps_the_finding_as_a_note(document_id, blocking_model):
     a = asked(document_id)
-    outcome = orchestrator.resume(a.session_id, option_key="b")
+    outcome = orchestrator.resume(a.session_id, choices={"s4": "b"})
 
     assert outcome.new_text == "drafted"   # the FIRST draft, untouched
     assert "s4" in [n.section_id for n in outcome.notes]
@@ -260,14 +273,14 @@ def test_flagging_calls_the_model_not_at_all(document_id, blocking_model, monkey
     calls = []
     monkeypatch.setattr("app.rewrite.structured_completion", lambda **kw: calls.append(1))
 
-    orchestrator.resume(a.session_id, option_key="b")
+    orchestrator.resume(a.session_id, choices={"s4": "b"})
 
     assert calls == []
 
 
 def test_accepting_returns_the_stored_draft_and_drops_the_finding(document_id, blocking_model):
     a = asked(document_id)
-    outcome = orchestrator.resume(a.session_id, option_key="c")
+    outcome = orchestrator.resume(a.session_id, choices={"s4": "c"})
 
     assert outcome.new_text == "drafted"
     assert outcome.notes == []
@@ -275,18 +288,88 @@ def test_accepting_returns_the_stored_draft_and_drops_the_finding(document_id, b
 
 def test_a_finished_session_cannot_be_answered_again(document_id, blocking_model):
     a = asked(document_id)
-    orchestrator.resume(a.session_id, option_key="c")
+    orchestrator.resume(a.session_id, choices={"s4": "c"})
 
     with pytest.raises(orchestrator.SessionFinished):
-        orchestrator.resume(a.session_id, option_key="c")
+        orchestrator.resume(a.session_id, choices={"s4": "c"})
 
 
 def test_an_unknown_session_is_not_a_crash(blocking_model):
     with pytest.raises(orchestrator.UnknownSession):
-        orchestrator.resume("nope", option_key="a")
+        orchestrator.resume("nope", choices={"s4": "a"})
 
 
 def test_an_unrecognised_option_is_rejected(document_id, blocking_model):
     a = asked(document_id)
     with pytest.raises(ValueError):
-        orchestrator.resume(a.session_id, option_key="z")
+        orchestrator.resume(a.session_id, choices={"s4": "z"})
+
+
+# --- multiple sections blocking at once -------------------------------------
+
+
+def test_two_blocking_sections_both_become_rows_in_the_same_question(
+    document_id, two_blocking_model
+):
+    a = asked(document_id)
+    assert {g.section_id for g in a.question.groups} == {"s4", "s1"}
+
+
+def test_answering_only_some_of_the_asked_sections_is_rejected(document_id, two_blocking_model):
+    a = asked(document_id)
+    with pytest.raises(orchestrator.AnswerMismatch):
+        orchestrator.resume(a.session_id, choices={"s4": "c"})
+
+
+def test_answering_a_section_that_was_not_asked_about_is_rejected(document_id, blocking_model):
+    a = asked(document_id)
+    with pytest.raises(orchestrator.AnswerMismatch):
+        orchestrator.resume(a.session_id, choices={"s4": "c", "s1": "c"})
+
+
+def test_holding_two_sections_combines_both_constraints_into_one_redraft_call(
+    document_id, two_blocking_model, monkeypatch
+):
+    a = asked(document_id)
+    calls = []
+
+    def draft(**kwargs):
+        calls.append(kwargs["user"])
+        return kwargs["schema"](applicable=True, new_text="second draft")
+
+    monkeypatch.setattr("app.rewrite.structured_completion", draft)
+    two_blocking_model["conflicts"] = []  # the re-check finds nothing new
+
+    outcome = orchestrator.resume(a.session_id, choices={"s4": "a", "s1": "a"})
+
+    assert len(calls) == 1  # one redraft, not one per held section
+    assert "4. Fees and Payment" in calls[0]
+    assert "1. Executive Summary" in calls[0]
+    assert outcome.new_text == "second draft"
+
+
+def test_holding_one_section_while_flagging_another_still_redrafts_once(
+    document_id, two_blocking_model
+):
+    a = asked(document_id)
+    two_blocking_model["new_text"] = "second draft"
+    two_blocking_model["conflicts"] = []
+
+    outcome = orchestrator.resume(a.session_id, choices={"s4": "a", "s1": "b"})
+
+    assert outcome.new_text == "second draft"          # s4 was held and redrafted
+    assert "s1" in [n.section_id for n in outcome.notes]  # s1 was only flagged
+
+
+def test_flagging_one_and_accepting_another_makes_no_new_model_call(
+    document_id, two_blocking_model, monkeypatch
+):
+    a = asked(document_id)
+    calls = []
+    monkeypatch.setattr("app.rewrite.structured_completion", lambda **kw: calls.append(1))
+
+    outcome = orchestrator.resume(a.session_id, choices={"s4": "b", "s1": "c"})
+
+    assert calls == []
+    assert [n.section_id for n in outcome.notes] == ["s4"]  # accepted s1 is dropped, not noted
+    assert outcome.new_text == "drafted"

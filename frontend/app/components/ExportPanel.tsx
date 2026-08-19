@@ -4,14 +4,12 @@ import { useState } from "react";
 import { exportDocument } from "@/lib/api";
 
 /**
- * The "I'm done, give me the file" button. It has its own loading and error
- * state, kept separate from a rewrite's, so a failed download never looks
- * like a failed rewrite.
+ * The download button, with its own loading and error state so a failed
+ * download never looks like a failed rewrite.
  *
- * This file uses the browser's built-in `document` object to trigger the
- * download. It has to live in its own file rather than inside page.tsx,
- * because page.tsx already has a variable named `document` (the uploaded
- * file) — that would hide the real one.
+ * Lives in its own file because it needs the browser's `document` object,
+ * and `page.tsx` already has a variable called `document` (the uploaded
+ * file) that would shadow it.
  */
 export function ExportPanel({
   documentId,

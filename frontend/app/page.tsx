@@ -51,24 +51,20 @@ export default function Home() {
     );
   }
 
-  // The answer replaces the question in place, so a second question renders
-  // exactly where the first one was rather than stacking below it.
-  async function handleAnswer(sessionId: string, optionKey: string) {
-    await run(() => answerQuestion({ sessionId, optionKey }));
+  async function handleAnswer(sessionId: string, choices: Record<string, string>) {
+    await run(() => answerQuestion({ sessionId, choices }));
   }
 
-  // Steps back from a pending question with none of it applied — the paused
-  // session on the backend is just left unanswered. Clearing the result also
-  // unlocks the instruction box and the section list, since both are locked
-  // by "is a question currently showing," not by anything else.
+  // Abandons the pending question — the paused session on the backend is
+  // just left unanswered. Clearing the result also unlocks the instruction
+  // box and section list, since both lock only while a question is showing.
   function handleCancel() {
     setResult(null);
     setError(null);
   }
 
-  // Clicking Accept is the only thing that keeps a rewrite. Re-running a
-  // rewrite you don't like, without clicking Accept, never overwrites
-  // something you already kept.
+  // Only clicking Accept keeps a rewrite. Re-running a rewrite you don't
+  // like never overwrites something you already accepted.
   function handleAccept() {
     if (result?.status !== "complete") return;
     setCurrentTexts((prev) => ({ ...prev, [result.section_id]: result.new_text }));
@@ -80,9 +76,8 @@ export default function Home() {
       .map((s) => s.id),
   );
 
-  // A question that's still waiting for an answer must not be walkable-away-
-  // from: no re-typing a new instruction, no jumping to a different section.
-  // Both would silently abandon the paused question instead of answering it.
+  // While a question is waiting for an answer, block re-typing the
+  // instruction or switching sections — either would silently abandon it.
   const awaitingAnswer = result?.status === "needs_clarification";
 
   return (
@@ -164,7 +159,7 @@ export default function Home() {
             <QuestionPanel
               result={result}
               busy={busy}
-              onAnswer={(optionKey) => handleAnswer(result.session_id, optionKey)}
+              onAnswer={(choices) => handleAnswer(result.session_id, choices)}
               onCancel={handleCancel}
             />
           )}

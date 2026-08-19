@@ -14,10 +14,8 @@ export function SectionList({
   headingsDetected: boolean;
   selectedId: string | null;
   editedIds: Set<string>;
-  /** True while an earlier rewrite's question is still waiting for an
-   *  answer. Switching sections mid-question would silently abandon that
-   *  question, so picking a different section is turned off until it's
-   *  answered. */
+  /** True while a question is waiting for an answer — picking a different
+   *  section is turned off so the question can't be silently abandoned. */
   locked?: boolean;
   onSelect: (id: string) => void;
 }) {

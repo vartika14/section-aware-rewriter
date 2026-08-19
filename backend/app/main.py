@@ -1,7 +1,5 @@
-"""HTTP surface.
-
-The browser talks to this directly — there is no Next.js proxy layer, so CORS
-is enabled for the dev front end.
+"""The HTTP API. The browser calls these routes directly — no proxy layer —
+so CORS is enabled for the frontend's dev server.
 """
 
 from typing import Literal
@@ -16,7 +14,7 @@ from .conflicts import Note
 from .export import build_docx
 from .llm import ModelRefusal
 from .parsing import Section, UnparseableDocument, parse_docx
-from .question import Branch, Option
+from .question import Branch, QuestionGroup
 from .rewrite import overlay_texts
 
 app = FastAPI(title="Section-aware rewrite agent")
@@ -67,24 +65,28 @@ class RewriteRequest(BaseModel):
 
 
 class AnswerRequest(BaseModel):
-    option_key: str
+    """One lettered choice per section id, e.g. `{"s4": "a", "s1": "b"}`."""
 
-    @field_validator("option_key")
+    choices: dict[str, str]
+
+    @field_validator("choices")
     @classmethod
-    def must_be_a_branch(cls, value: str) -> str:
-        """Reject at the boundary rather than deep in the loop, so a bad key is a
-        422 about the request instead of a 500 about a ValueError."""
-        try:
-            Branch(value)
-        except ValueError as exc:
-            raise ValueError("option_key must be one of: a, b, c.") from exc
+    def values_must_be_branches(cls, value: dict[str, str]) -> dict[str, str]:
+        """Reject a bad letter here, as a clean 422 — before it can become a
+        crash deeper in the code. Checking that `choices` covers exactly the
+        sections being asked about happens in `orchestrator.resume()`
+        instead, since that needs the session, which isn't available here."""
+        for key in value.values():
+            try:
+                Branch(key)
+            except ValueError as exc:
+                raise ValueError("Each choice must be one of: a, b, c.") from exc
         return value
 
 
 class RewriteComplete(BaseModel):
-    """The rewrite stands. `notes` are consequences the policy judged not worth
-    interrupting for — shown so the author can act on them by hand. Never
-    applied outside the selected section."""
+    """The rewrite is done. `notes` are things noticed elsewhere in the
+    document but not applied — shown so the author can act on them by hand."""
 
     status: Literal["complete"] = "complete"
     section_id: str
@@ -94,21 +96,18 @@ class RewriteComplete(BaseModel):
 
 
 class RewriteNeedsClarification(BaseModel):
-    """The rewrite is suspended until the user picks an option."""
+    """The rewrite is paused until the author answers every row in `groups`
+    — usually one row, sometimes more if several sections are affected."""
 
     status: Literal["needs_clarification"] = "needs_clarification"
     session_id: str
     section_id: str
-    question: str
-    options: list[Option]
+    groups: list[QuestionGroup]
 
 
 class RewriteDeclined(BaseModel):
-    """The instruction made no sense for this section, so nothing was written.
-
-    Declining is a result, not an error: mangling the section confidently would
-    be far worse than saying so.
-    """
+    """The instruction didn't apply to this section, so nothing was written.
+    This is a normal result, not an error."""
 
     status: Literal["declined"] = "declined"
     section_id: str
@@ -126,8 +125,7 @@ def _to_response(outcome: orchestrator.Outcome) -> RewriteResponse:
         return RewriteNeedsClarification(
             session_id=outcome.session_id,
             section_id=outcome.section_id,
-            question=outcome.question.text,
-            options=outcome.question.options,
+            groups=outcome.question.groups,
         )
     return RewriteComplete(
         section_id=outcome.section_id,
@@ -166,11 +164,11 @@ async def rewrite(request: RewriteRequest) -> RewriteResponse:
 
 @app.post("/rewrite/{session_id}/answer", response_model=RewriteResponse)
 async def answer(session_id: str, request: AnswerRequest) -> RewriteResponse:
-    """Resume a suspended rewrite. Same three shapes as `/rewrite`, so the front
-    end renders a second question exactly as it rendered the first — though
-    resume() can in fact only ever return complete or declined."""
+    """Resume a paused rewrite with the author's answers. Returns the same
+    response shapes as `/rewrite`, though in practice this can only come
+    back complete or declined — never a second question."""
     try:
-        outcome = orchestrator.resume(session_id, option_key=request.option_key)
+        outcome = orchestrator.resume(session_id, choices=request.choices)
     except orchestrator.UnknownSession as exc:
         raise HTTPException(
             status_code=404,
@@ -187,6 +185,8 @@ async def answer(session_id: str, request: AnswerRequest) -> RewriteResponse:
         raise HTTPException(
             status_code=409, detail="This rewrite has already finished."
         ) from exc
+    except orchestrator.AnswerMismatch as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (ModelRefusal, OpenAIError) as exc:
         raise HTTPException(
             status_code=502, detail=f"The model could not complete this rewrite: {exc}"
@@ -206,14 +206,12 @@ class ExportRequest(BaseModel):
 
 @app.post("/documents/{document_id}/export")
 async def export_document(document_id: str, request: ExportRequest) -> Response:
-    """Build the current, edited version of the document into a real .docx
-    file, and send it back.
+    """Build a real .docx of the document as it currently stands, and send it
+    back as a file.
 
-    The order and the headings always come from the document we already have
-    saved — never from the request. Only the text comes from the request. If
-    the request is missing text for a section, we just use that section's
-    original text instead of leaving it blank. If the request includes an id
-    we don't recognize, we just ignore it.
+    Section order and headings always come from the stored document, never
+    from the request — the request can only supply text. A section missing
+    from the request keeps its original text; an unrecognized id is ignored.
     """
     document = store.get_document(document_id)
     if document is None:

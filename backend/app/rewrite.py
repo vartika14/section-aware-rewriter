@@ -1,8 +1,9 @@
-"""DRAFT: rewrite one section, informed by the whole document.
+"""DRAFT: write the replacement text for one section.
 
-One model call. Whether the instruction even makes sense for the selected
-section is decided here, before anything downstream spends a second call on a
-draft nobody asked for.
+This is the first AI call, and it's shown the whole document, not just the
+target section, so it can match tone and avoid stepping on other sections.
+It also decides whether the instruction applies here at all — if not, we
+skip DETECT entirely, since there's no draft to check.
 """
 
 from collections.abc import Sequence
@@ -91,11 +92,9 @@ def draft_section(
 ) -> DraftResult:
     """Rewrite one section.
 
-    `constraints` carries anything the author has since insisted on — on a
-    second draft, that the clause they chose to hold must survive intact. Built
-    in Python from a conflict, never asked for, so what the second draft is held
-    to can be unit tested. Empty by default, so the first draft's prompt is
-    unchanged from before this existed.
+    `constraints` are extra rules the redraft must follow — e.g. "keep this
+    section's fee unchanged" — used on a second draft after the author says
+    to hold something. Empty on the first draft.
     """
     section = find_section(sections, section_id)
 

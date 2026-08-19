@@ -1,12 +1,11 @@
-"""DETECT, and the interrupt policy that decides what to do with what it finds.
+"""DETECT: check a proposed rewrite against the rest of the document.
 
-DETECT is a separate model call from DRAFT, framed as an anonymous review — "here
-is a proposed replacement, here is the rest of the document, what does it break?"
-— with no hint that it is reading its own output, because a model asked to write
-and critique in one breath rationalises.
+This is a second, separate AI call from DRAFT. It's shown the proposed
+replacement as if reviewing someone else's work, not its own — a model asked
+to write and critique in the same breath tends to defend its own writing.
 
-This call produces evidence. Whether any of it is worth interrupting the author
-for is `decide()`, in pure Python, added in the next part of this file.
+DETECT only reports what it found. Deciding whether any of it is worth
+interrupting the author for is `decide()`, below — plain Python, no AI call.
 """
 
 from typing import Literal
@@ -49,12 +48,12 @@ depends on. An empty list is a valid and common answer.
 
 
 class Conflict(BaseModel):
-    """One consequence of the rewrite, in a section other than the one rewritten.
+    """One consequence of the rewrite, found in a section other than the one
+    being rewritten.
 
-    `blocking` is the model's own judgment, trusted directly — the room this
-    design uses for "extra LLM calls for conflict detection" instead of a
-    keyword heuristic. Python's only say is `ground()`: is the quote real, and
-    is this actually a different section.
+    `blocking` is the model's own judgment — we trust it. Python's only job
+    is `ground()`, below: checking the quote is real and belongs to a
+    different section.
     """
 
     section_id: str
@@ -74,14 +73,11 @@ class Note(BaseModel):
 
 
 def _conflict_schema(section_ids: list[str]) -> type[BaseModel]:
-    """Build the response schema with `section_id` constrained to this
-    document's real ids.
+    """Build the response schema for this specific document, with
+    `section_id` restricted to this document's real ids.
 
-    The old design let the model return an id like "4. Fees and Payment (s5)"
-    and then tried to repair it after the fact with three fallback strategies.
-    A dynamically-built Literal makes that response fail schema validation
-    outright — which already has a retry, in `llm.py` — instead of reaching
-    application code as something to be guessed back into shape.
+    This makes it impossible for the model to return a made-up or malformed
+    id — the API rejects it before our code ever sees it.
     """
     SectionId = Literal[*section_ids]  # PEP 646 star-unpacking
     PerRequestConflict = create_model(
@@ -117,14 +113,10 @@ def find_conflicts(
 def ground(
     conflicts: list[Conflict], sections_by_id: dict[str, Section], rewritten_id: str
 ) -> list[Conflict]:
-    """Keep only conflicts whose quote is real, in a section other than the one
-    being rewritten.
-
-    Excluding the rewritten section here is what replaces the old design's
-    separate self-reference guard: since there is no second "resolution" quote
-    left to fail closed on, keeping the section-under-edit out of the candidate
-    pool in the first place removes the whole failure mode rather than patching
-    it after the fact.
+    """Keep only conflicts whose quote is real — actually present, word for
+    word, in the section it claims to be from — and against a section other
+    than the one being rewritten. This is the hallucination guard: a made-up
+    quote never reaches the author as something to act on.
     """
     grounded = []
     for c in conflicts:
@@ -155,42 +147,47 @@ def to_notes(
     ]
 
 
+class ConflictGroup(BaseModel):
+    """All the blocking conflicts against one section, bundled into one row
+    the author answers once — even if DETECT reported several quotes from
+    that same section."""
+
+    section_id: str
+    heading: str
+    conflicts: list[Conflict]
+
+
 class Decision(BaseModel):
-    """The whole interrupt policy's output: ask about one thing, or complete."""
+    """What the interrupt policy decided: either ask about every section
+    that genuinely blocks (one row each), or complete with no interruption."""
 
     action: Literal["ask", "complete"]
-    asking: list[Conflict] = []
+    asking: list[ConflictGroup] = []
     notes: list[Note] = []
 
 
 def exclude_self_references(conflicts: list[Conflict], rewritten_id: str) -> list[Conflict]:
-    """A finding against the section being rewritten isn't a conflict with
-    another section at all — it's just the rewrite.
+    """Drop any finding against the section being rewritten — that's not a
+    conflict with another section, it's just the rewrite happening.
 
-    Pulled out as its own function because it's needed in two separate
-    places: here in decide(), and in orchestrator.py's resume(), which builds
-    its own notes on the "hold" branch without going through decide() at all.
-    Fixing it in one of those two places and not the other is exactly how
-    this bug got in — a rewritten section could still flag itself, but only
-    after being told to hold and redraft.
+    This is its own function because two places need it: `decide()` below,
+    and `orchestrator.py`'s `resume()`, which checks a redraft the same way
+    but doesn't call `decide()` to do it.
     """
     return [c for c in conflicts if c.section_id != rewritten_id]
 
 
 def decide(conflicts: list[Conflict], sections: list[Section], rewritten_id: str) -> Decision:
-    """Ungrounded conflicts never block — a possibly hallucinated conflict must
-    not interrupt anyone, the same asymmetry the old design measured and kept.
+    """The interrupt policy: which findings are worth stopping for.
 
-    Only the FIRST blocking section is ever asked about. Everything else this
-    round — a different blocking section, or a non-blocking finding — becomes a
-    note instead. This is the entire reason "at most one question, ever" needs
-    no counter: there is only ever one group to ask about, by construction.
+    A finding that isn't grounded (see `ground()`) never blocks, even if the
+    model marked it blocking — an unverified quote isn't trustworthy enough
+    to interrupt someone over. Every section left with a blocking finding
+    gets its own row in the question, so a rewrite that upsets both Fees and
+    Timeline asks about both at once, not one now and one later. Anything
+    left over — non-blocking, or ungrounded — becomes a note instead.
     """
     by_id = {s.id: s for s in sections}
-    # Drop self-references before anything else can use this list, not only
-    # from the blocking check. ground() also excludes them further down,
-    # kept as a second, independent check so ground() stays correct on its
-    # own if anything ever calls it without this filter applied first.
     conflicts = exclude_self_references(conflicts, rewritten_id)
     grounded = ground(conflicts, by_id, rewritten_id)
     blocking = [c for c in grounded if c.blocking]
@@ -198,9 +195,17 @@ def decide(conflicts: list[Conflict], sections: list[Section], rewritten_id: str
     if not blocking:
         return Decision(action="complete", notes=to_notes(conflicts, grounded, by_id))
 
-    primary_section = blocking[0].section_id
-    primary = [c for c in blocking if c.section_id == primary_section]
-    deferred = [c for c in conflicts if c not in primary]
+    # Keeps sections in the order DETECT reported them, not hash order.
+    blocking_section_ids = list(dict.fromkeys(c.section_id for c in blocking))
+    groups = [
+        ConflictGroup(
+            section_id=section_id,
+            heading=by_id[section_id].heading,
+            conflicts=[c for c in blocking if c.section_id == section_id],
+        )
+        for section_id in blocking_section_ids
+    ]
+    non_blocking = [c for c in conflicts if c not in blocking]
     return Decision(
-        action="ask", asking=primary, notes=to_notes(deferred, grounded, by_id)
+        action="ask", asking=groups, notes=to_notes(non_blocking, grounded, by_id)
     )

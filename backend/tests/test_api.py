@@ -80,8 +80,8 @@ NEW_TEXT = "Concrete deliverables: a current-state map."
 @pytest.fixture
 def fake_model(monkeypatch):
     """Substitute DRAFT and DETECT. Mutate `state["conflicts"]` to script what
-    DETECT finds; default is a clean bill of health. The phrasing call fails on
-    purpose — wording is test_question.py's business, not this file's."""
+    DETECT finds; default is a clean bill of health. There's no phrasing call
+    to fake any more — the question is built from Python alone."""
     state = {"conflicts": []}
 
     monkeypatch.setattr(
@@ -91,10 +91,6 @@ def fake_model(monkeypatch):
     monkeypatch.setattr(
         "app.conflicts.structured_completion",
         lambda **kw: kw["schema"](findings=[c.model_dump() for c in state["conflicts"]]),
-    )
-    monkeypatch.setattr(
-        "app.question.structured_completion",
-        lambda **kw: (_ for _ in ()).throw(RuntimeError("phrasing offline")),
     )
     return state
 
@@ -183,8 +179,23 @@ def test_a_blocking_finding_suspends_and_asks(document_id, fake_model):
 
     assert body["status"] == "needs_clarification"
     assert body["session_id"]
-    assert "A fixed fee of EUR 48,000" in body["question"]
-    assert [option["key"] for option in body["options"]] == ["a", "b", "c"]
+    assert len(body["groups"]) == 1
+    group = body["groups"][0]
+    assert group["section_id"] == "s3"
+    assert "A fixed fee of EUR 48,000" in group["conflicts"][0]["quote"]
+    assert [option["key"] for option in group["options"]] == ["a", "b", "c"]
+
+
+def test_two_blocking_sections_both_become_rows_in_one_question(document_id, fake_model):
+    fake_model["conflicts"] = [
+        blocking_conflict(),
+        blocking_conflict(section_id="s1", quote="act on this quarter"),
+    ]
+
+    body = rewrite(document_id).json()
+
+    assert body["status"] == "needs_clarification"
+    assert {g["section_id"] for g in body["groups"]} == {"s3", "s1"}
 
 
 def test_the_suspended_run_is_kept_so_it_can_be_resumed(document_id, fake_model):
@@ -248,8 +259,10 @@ def test_an_instruction_that_makes_no_sense_is_declined(document_id, monkeypatch
 # --- answering the question ----------------------------------------------
 
 
-def answer(session_id: str, option_key: str = "c"):
-    return client.post(f"/rewrite/{session_id}/answer", json={"option_key": option_key})
+def answer(session_id: str, option_key: str = "c", *, section_id: str = "s3"):
+    return client.post(
+        f"/rewrite/{session_id}/answer", json={"choices": {section_id: option_key}}
+    )
 
 
 @pytest.fixture
@@ -298,6 +311,13 @@ def test_answering_twice_409s(asked):
 
 def test_an_unrecognised_option_is_a_422(asked):
     assert answer(asked["session_id"], "z").status_code == 422
+
+
+def test_answering_with_a_missing_section_is_a_422(asked):
+    response = client.post(
+        f"/rewrite/{asked['session_id']}/answer", json={"choices": {}}
+    )
+    assert response.status_code == 422
 
 
 def test_a_lost_document_is_a_404_not_a_500(asked, monkeypatch):

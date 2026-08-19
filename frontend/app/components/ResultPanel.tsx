@@ -2,10 +2,7 @@
 
 import type { RewriteComplete, Note } from "@/lib/api";
 
-/**
- * A consequence the agent judged not worth interrupting for. Shown, never
- * applied: nothing is written outside the selected section.
- */
+/** Something noticed elsewhere in the document, shown but never applied. */
 function NoteCard({ note }: { note: Note }) {
   return (
     <li className="rounded-md border border-slate-200 p-3">
