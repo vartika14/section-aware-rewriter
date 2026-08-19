@@ -15,24 +15,23 @@ import {
 } from "@/lib/api";
 
 export default function Home() {
+  // document.sections is the single current-state array: it starts as the
+  // original upload, and an accepted edit updates the relevant section's
+  // text in place (see handleAccept). Anything on screen reads from it
+  // directly — there's no separate "current" copy to remember to prefer.
   const [document, setDocument] = useState<UploadResponse | null>(null);
   const [filename, setFilename] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [currentTexts, setCurrentTexts] = useState<Record<string, string>>({});
+
+  // A pristine snapshot taken once on upload, never touched again — the
+  // only thing this is for is telling editedIds apart from unedited ones.
+  const [originalTexts, setOriginalTexts] = useState<Record<string, string>>({});
 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<RewriteResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Sections as the author currently sees them: accepted edits overlaid on
-  // top of the original upload. Anything shown on screen should read from
-  // this, not from document.sections directly, or a section you've already
-  // edited would keep showing its stale original text.
-  const displaySections = (document?.sections ?? []).map((s) =>
-    s.id in currentTexts ? { ...s, text: currentTexts[s.id] } : s,
-  );
-
-  const selected = displaySections.find((s) => s.id === selectedId) ?? null;
+  const selected = document?.sections.find((s) => s.id === selectedId) ?? null;
 
   async function run(call: () => Promise<RewriteResult>) {
     setBusy(true);
@@ -54,7 +53,7 @@ export default function Home() {
         documentId: document.document_id,
         sectionId: selectedId,
         instruction,
-        currentTexts,
+        currentTexts: Object.fromEntries(document.sections.map((s) => [s.id, s.text])),
       }),
     );
   }
@@ -74,13 +73,18 @@ export default function Home() {
   // Only clicking Accept keeps a rewrite. Re-running a rewrite you don't
   // like never overwrites something you already accepted.
   function handleAccept() {
-    if (result?.status !== "complete") return;
-    setCurrentTexts((prev) => ({ ...prev, [result.section_id]: result.new_text }));
+    if (result?.status !== "complete" || !document) return;
+    setDocument({
+      ...document,
+      sections: document.sections.map((s) =>
+        s.id === result.section_id ? { ...s, text: result.new_text } : s,
+      ),
+    });
   }
 
   const editedIds = new Set(
     (document?.sections ?? [])
-      .filter((s) => currentTexts[s.id] !== s.text)
+      .filter((s) => originalTexts[s.id] !== s.text)
       .map((s) => s.id),
   );
 
@@ -109,7 +113,7 @@ export default function Home() {
               setSelectedId(null);
               setResult(null);
               setError(null);
-              setCurrentTexts(
+              setOriginalTexts(
                 Object.fromEntries(uploaded.sections.map((s) => [s.id, s.text])),
               );
             }}
@@ -122,7 +126,7 @@ export default function Home() {
               </p>
 
               <SectionList
-                sections={displaySections}
+                sections={document.sections}
                 headingsDetected={document.headings_detected}
                 selectedId={selectedId}
                 editedIds={editedIds}
@@ -137,7 +141,9 @@ export default function Home() {
               <ExportPanel
                 documentId={document.document_id}
                 filename={filename ?? "document.docx"}
-                currentTexts={currentTexts}
+                currentTexts={Object.fromEntries(
+                  document.sections.map((s) => [s.id, s.text]),
+                )}
               />
             </>
           )}
@@ -185,7 +191,10 @@ export default function Home() {
             <ResultPanel
               result={result}
               onAccept={handleAccept}
-              accepted={currentTexts[result.section_id] === result.new_text}
+              accepted={
+                document?.sections.find((s) => s.id === result.section_id)?.text ===
+                result.new_text
+              }
             />
           )}
         </div>
