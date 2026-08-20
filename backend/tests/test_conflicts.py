@@ -229,3 +229,62 @@ def test_a_conflict_against_the_rewritten_section_stays_out_of_notes_on_the_ask_
     )
     assert decision.action == "ask"
     assert "s2" not in [n.section_id for n in decision.notes]
+
+
+# --- a note carries the model's blocking judgment through -------------------
+
+
+def test_a_note_carries_whether_the_finding_was_blocking():
+    # Non-blocking and grounded — the ordinary "worth mentioning" note.
+    decision = decide([conflict(blocking=False)], SECTIONS, rewritten_id="s2")
+    assert decision.notes[0].blocking is False
+
+    # Blocking but ungrounded — never asked about, still shown, and still
+    # carries the model's blocking judgment so the author knows it would
+    # have been a question had the quote been real.
+    ungrounded = conflict(blocking=True, quote="a fee that does not appear in the document")
+    decision = decide([ungrounded], SECTIONS, rewritten_id="s2")
+    assert decision.notes[0].blocking is True
+    assert decision.notes[0].verified is False
+
+
+# --- dedupe_notes(): the same note reported twice is shown once -------------
+
+from app.conflicts import Note, dedupe_notes  # noqa: E402
+
+
+def note(**overrides) -> Note:
+    return Note(
+        **{
+            "section_id": "s3",
+            "heading": "3. Fees",
+            "quote": "A fixed fee of EUR 48,000",
+            "explanation": "Priced against the old scope.",
+            "verified": True,
+            "blocking": True,
+            **overrides,
+        }
+    )
+
+
+def test_an_exact_repeat_is_dropped():
+    assert dedupe_notes([note(), note()]) == [note()]
+
+
+def test_notes_about_different_sections_are_both_kept():
+    other = note(section_id="s1", heading="1. Executive Summary")
+    assert dedupe_notes([note(), other]) == [note(), other]
+
+
+def test_a_different_explanation_for_the_same_quote_is_not_a_duplicate():
+    """Same section, same quote, but a genuinely different reason — that's
+    two distinct findings, not a repeat."""
+    other = note(explanation="Also referenced in the timeline.")
+    assert dedupe_notes([note(), other]) == [note(), other]
+
+
+def test_dedupe_keeps_the_first_occurrence_and_the_original_order():
+    first = note(explanation="From the first round.")
+    second = note(explanation="From the first round.")  # exact repeat
+    third = note(section_id="s1", heading="1. Executive Summary")
+    assert dedupe_notes([first, second, third]) == [first, third]

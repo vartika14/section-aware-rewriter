@@ -2,12 +2,24 @@
 
 import type { RewriteComplete, Note } from "@/lib/api";
 
-/** Something noticed elsewhere in the document, shown but never applied. */
+/** Something noticed elsewhere in the document, shown but never applied.
+ *  A blocking note is a real conflict that just never got asked about — most
+ *  often one a Hold redraft turned up — so it's marked apart from a note
+ *  that's merely informational. */
 function NoteCard({ note }: { note: Note }) {
   return (
-    <li className="rounded-md border border-slate-200 p-3">
+    <li
+      className={`rounded-md border p-3 ${
+        note.blocking ? "border-amber-300" : "border-slate-200"
+      }`}
+    >
       <div className="flex items-center gap-2">
         <span className="text-sm font-medium text-slate-700">{note.heading}</span>
+        {note.blocking && (
+          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
+            needs review
+          </span>
+        )}
         {!note.verified && (
           <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">
             unverified

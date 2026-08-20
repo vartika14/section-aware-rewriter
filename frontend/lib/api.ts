@@ -38,6 +38,10 @@ export type Note = {
   /** False when the quote couldn't be found in that section — a possibly
    *  invented finding, shown but never something the rewrite waited on. */
   verified: boolean;
+  /** True when this was a real conflict the model judged serious — most
+   *  often one a Hold redraft turned up, which is never asked about a
+   *  second time, so this is the only sign it's more than just an FYI. */
+  blocking: boolean;
 };
 
 export type Option = { key: string; label: string };

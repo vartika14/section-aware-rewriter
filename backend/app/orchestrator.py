@@ -8,7 +8,16 @@ end up asking a second question.
 from pydantic import BaseModel
 
 from . import store
-from .conflicts import Conflict, Note, decide, exclude_self_references, find_conflicts, ground, to_notes
+from .conflicts import (
+    Conflict,
+    Note,
+    decide,
+    dedupe_notes,
+    exclude_self_references,
+    find_conflicts,
+    ground,
+    to_notes,
+)
 from .question import Branch, Question, build_question
 from .rewrite import draft_section, find_section, overlay_texts
 
@@ -172,4 +181,7 @@ def resume(session_id: str, *, choices: dict[str, str]) -> Completed | Declined:
 
     session.resolved = True
     section = find_section(session.context, session.section_id)
-    return Completed(section_id=section.id, old_text=section.text, new_text=new_text, notes=notes)
+    return Completed(
+        section_id=section.id, old_text=section.text, new_text=new_text,
+        notes=dedupe_notes(notes),
+    )

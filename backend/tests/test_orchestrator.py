@@ -257,6 +257,25 @@ def test_holding_reports_what_the_recheck_finds_as_a_note_never_a_second_questio
     assert "s1" in [n.section_id for n in outcome.notes]
 
 
+def test_holding_never_reports_the_same_note_twice(document_id, blocking_model):
+    """The first round already noted s1 as non-blocking; the redraft's
+    re-check reports the exact same finding again. It must appear once."""
+    repeated = Conflict(section_id="s1", quote="A recommendation within the quarter",
+                         explanation="No longer supported by the trimmed scope.", blocking=False)
+    blocking_model["conflicts"] = [
+        Conflict(section_id="s4", quote="A fixed fee of EUR 48,000",
+                 explanation="Priced against the old scope.", blocking=True),
+        repeated,
+    ]
+    a = asked(document_id)
+
+    blocking_model["conflicts"] = [repeated]
+
+    outcome = orchestrator.resume(a.session_id, choices={"s4": "a"})
+
+    assert [n.section_id for n in outcome.notes].count("s1") == 1
+
+
 def test_flagging_returns_the_stored_draft_and_keeps_the_finding_as_a_note(document_id, blocking_model):
     a = asked(document_id)
     outcome = orchestrator.resume(a.session_id, choices={"s4": "b"})

@@ -46,7 +46,7 @@ def decide(conflicts, sections, rewritten_id) -> Decision:
     blocking = [c for c in grounded if c.blocking]
 
     if not blocking:
-        return Decision(action="complete", notes=to_notes(conflicts, grounded, by_id))
+        return Decision(action="complete", notes=dedupe_notes(to_notes(conflicts, grounded, by_id)))
 
     blocking_section_ids = list(dict.fromkeys(c.section_id for c in blocking))
     groups = [
@@ -55,7 +55,8 @@ def decide(conflicts, sections, rewritten_id) -> Decision:
         for sid in blocking_section_ids
     ]
     non_blocking = [c for c in conflicts if c not in blocking]
-    return Decision(action="ask", asking=groups, notes=to_notes(non_blocking, grounded, by_id))
+    return Decision(action="ask", asking=groups,
+                     notes=dedupe_notes(to_notes(non_blocking, grounded, by_id)))
 ```
 
 Two Python-only checks sit in front of it:
@@ -64,6 +65,10 @@ Two Python-only checks sit in front of it:
   ungrounded conflict never blocks; at worst it's shown as an unverified note.
 - **`exclude_self_references()`** — a finding against the section actually being rewritten isn't
   a conflict with another section, it's just the rewrite.
+
+A third pass, `dedupe_notes()`, drops a note that's an exact repeat — same section, quote, and
+explanation — of one already kept. This matters on the redraft path: after a Hold, DETECT runs
+again and can report the same finding a second time.
 
 The model's own `blocking: bool` judgment is trusted directly — Python never re-derives it from a
 keyword list, so the policy has nothing document-specific to fail on.
@@ -133,6 +138,7 @@ class Note(BaseModel):
     quote: str
     explanation: str
     verified: bool     # false when the quote couldn't be grounded — shown, never hidden
+    blocking: bool     # true when this was a real conflict, not just an FYI
 ```
 
 ---

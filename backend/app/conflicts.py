@@ -63,13 +63,20 @@ class Conflict(BaseModel):
 
 
 class Note(BaseModel):
-    """A conflict the author is told about but not asked about."""
+    """A conflict the author is told about but not asked about.
+
+    `blocking` carries the model's original judgment through, so the author
+    can tell a note that stands in for a real, unresolved conflict — most
+    often one from a Hold redraft, which is checked again but never turns
+    into a second question — apart from one that's merely informational.
+    """
 
     section_id: str
     heading: str
     quote: str
     explanation: str
     verified: bool
+    blocking: bool
 
 
 def _conflict_schema(section_ids: list[str]) -> type[BaseModel]:
@@ -142,9 +149,24 @@ def to_notes(
             quote=c.quote,
             explanation=c.explanation,
             verified=(c.section_id, c.quote) in grounded_set,
+            blocking=c.blocking,
         )
         for c in conflicts
     ]
+
+
+def dedupe_notes(notes: list[Note]) -> list[Note]:
+    """Drop a note that repeats one already kept — same section, same quote,
+    same explanation. Can happen when a Hold redraft is checked again and
+    DETECT reports a finding that was already noted the first time."""
+    seen = set()
+    deduped = []
+    for note in notes:
+        key = (note.section_id, note.quote, note.explanation)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(note)
+    return deduped
 
 
 class ConflictGroup(BaseModel):
@@ -193,7 +215,7 @@ def decide(conflicts: list[Conflict], sections: list[Section], rewritten_id: str
     blocking = [c for c in grounded if c.blocking]
 
     if not blocking:
-        return Decision(action="complete", notes=to_notes(conflicts, grounded, by_id))
+        return Decision(action="complete", notes=dedupe_notes(to_notes(conflicts, grounded, by_id)))
 
     # Keeps sections in the order DETECT reported them, not hash order.
     blocking_section_ids = list(dict.fromkeys(c.section_id for c in blocking))
@@ -207,5 +229,5 @@ def decide(conflicts: list[Conflict], sections: list[Section], rewritten_id: str
     ]
     non_blocking = [c for c in conflicts if c not in blocking]
     return Decision(
-        action="ask", asking=groups, notes=to_notes(non_blocking, grounded, by_id)
+        action="ask", asking=groups, notes=dedupe_notes(to_notes(non_blocking, grounded, by_id))
     )
