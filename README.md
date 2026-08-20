@@ -9,12 +9,7 @@ Upload a `.docx`, pick one section — say, "Scope of Work" or "Fees" — and
 describe the change you want in plain English. The app rewrites that section.
 
 Before it commits to the change, it checks the rest of the document for
-anything that rewrite would quietly break: a fee that assumed the old scope,
-a timeline that assumed the old number of phases, a paragraph that refers
-back to wording that no longer exists. If it finds something only you can
-decide, it stops and asks — showing the exact section and words at stake,
-not a vague warning. Nothing outside the section you picked is ever changed
-without you seeing it first.
+anything that rewrite would quietly break: a fee that assumed the old scope, a timeline that assumed the old number of phases, a paragraph that refers back to wording that no longer exists. If it finds something only you can decide, it stops and asks — showing the exact section and words at stake, not a vague warning. Nothing outside the section you picked is ever changed without you seeing it first.
 
 Once you're happy with your edits, you download a real `.docx` with your
 changes applied and everything else exactly as it was.
@@ -44,14 +39,10 @@ Two separate AI calls do the thinking:
 
 Everything after that — deciding whether a finding is serious enough to
 interrupt you, building the question you see, remembering which edits
-you've already accepted — is ordinary Python, not AI. Keeping that decision
-out of the AI's hands is what makes it consistent and testable.
+you've already accepted — is ordinary Python, not AI. Keeping that decision out of the AI's hands is what makes it consistent and testable.
 
-If a rewrite affects more than one other section, you see and answer all of
-them together, in one screen — not one question now and a surprise later.
-For each one, you choose to hold that section as written (and reshape your
-rewrite to fit), flag it for your own review later, or accept the mismatch
-and move on.
+If a rewrite affects more than one other section, you see and answer all of them together, in one screen — not one question now and a surprise later.
+For each one, you choose to hold that section as written (and reshape your rewrite to fit), flag it for your own review later, or accept the mismatch and move on.
 
 ## Running it locally
 
@@ -63,7 +54,7 @@ You'll need Python 3.12+, Node 20+, and an Azure OpenAI or OpenAI API key.
 cd backend
 python3.12 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
-cp .env.example .env
+cp -n .env.example .env
 ```
 
 Open `.env` and fill in either the Azure block or `OPENAI_API_KEY`. Keys
@@ -97,12 +88,9 @@ cd backend
 ```
 
 These run in a couple of seconds with no network calls — the AI is swapped
-out for a fake response in tests, so what's actually being checked is the
-app's own logic: when it decides to interrupt, how it builds the question,
-how it applies edits.
+out for a fake response in tests, so what's actually being checked is the app's own logic: when it decides to interrupt, how it builds the question, how it applies edits.
 
-A separate, opt-in suite calls the real AI model against sample documents,
-to confirm the interrupt behavior holds up beyond hand-picked test cases:
+A separate, opt-in suite calls the real AI model against sample documents, to confirm the interrupt behavior holds up beyond hand-picked test cases:
 
 ```bash
 RUN_LIVE_TESTS=1 ./.venv/bin/python -m pytest tests/test_calibration.py -q
